@@ -9,15 +9,14 @@ use Getopt::Long;
 # ----------------------------------------------------------------------
 my $p = arg();
 
-my $s = TxtParser->fromfile($p->{file}->[0])
+my $txt = Txt->fromfile($p->{file}->[0])
     || err('Can\'t open file "%s": %s', $p->{file}->[0], $!);
 
-my $yaml = $s->getyaml()
-    || err($s);
+my $yaml = yaml($txt) || err($!);
 
 
 use Data::Dumper;
-print Dumper $yaml, $s, $p;
+print Dumper $yaml, $txt, $p;
 
 # ----------------------------------------------------------------------
 # ---
@@ -74,30 +73,140 @@ sub arg {
 
 # ----------------------------------------------------------------------
 # ---
-# ---   TxtParser
+# ---   YAML
 # ---
 
-package TxtParser;
+sub yaml {
+    my $txt = $_[0]->copy();
+
+    $txt->skipempty();
+    $txt->fetchln(qr/^\s*\-{3}/) || return {};
+    $_[0] = $txt;
+
+    my $yaml = {};
+    my @cur = { space => 0, data => $yaml };
+
+    while (my ($s) = $txt->fetchln()) {
+        # просто стираем пустые строки
+        $s->empty() && next;
+        # проверка на окончание yaml
+        $s->match(qr/^\-{3}/) && last;
+
+        # Строки переносим в @yaml
+        my (undef, $space, $key, $val) = $s->match(qr/^(\s*)([a-zA-Z]+[a-zA-Z \-\d]+)\s*(?:\:\s*)(.*)?/);
+        $val || last;
+
+        # сначала разбираемся с уровнем вложенности
+        $space->{len} += 3 while $space->{str} =~ s/\t//;
+        $space = $space->{len};
+        pop(@cur) while (@cur > 1) && ($cur[@cur-1]->{space} > $space);
+        my $c = $cur[@cur-1];
+
+        if ($space > $c->{space}) {
+            my $k = $c->{key} || return $key->err('YAML: Deeper level without key');
+            my $d = ( $c->{data}->{ $k } = {} );
+            push @cur, { space => $space, data => $d };
+            $c = $cur[@cur-1];
+        }
+
+        my $d = $c->{data};
+
+        # key
+        if (exists $d->{ $key->{str} }) {
+            return $key->err('YAML: Duplicate key: %s', $key->{str});
+        }
+        $key = $key->{str};
+
+        if ($val->empty()) {
+            $c->{key} = $key;
+        }
+        else {
+            delete $c->{key};
+
+            if (my (undef, $v1) = $val->match(qr/^\"((\\.|[^\\\"]+)*)\"\s*$/)) {
+                $val = $v1;
+            }
+            elsif ($val->match(qr/^\"/)) {
+                return $val->err('YAML: Not-correct string value');
+            }
+            elsif ($val->match(qr/^\-?\d$/)) {
+                $val->{str} = int $val->{str};
+            }
+        }
+
+        $d->{ $key } = $val->{str};
+    }
+
+    return $yaml;
+}
+
+# ----------------------------------------------------------------------
+# ---
+# ---   Txt
+# ---
+
+package Txt;
 
 sub new {
     my $class = shift;
-    return bless { txt => [@_] }, $class;
+    my $txt = [@_];
+
+    my $r = 0;
+    foreach (@$txt) {
+        $r++;
+        s/[\r\n]+//;
+        $_ = Str->new($_, row => $r, col => 1);
+    }
+
+    return bless $txt, $class;
 }
 
 sub fromfile {
     my $class = shift;
 
     open(my $fh, shift()) || return;
-    my @txt = <$fh>;
+    my $txt = $class->new( <$fh> );
     close $fh;
 
-    s/[\r\n]+// foreach @txt;
-
-    return $class->new(@txt);
+    return $txt;
 }
 
-sub possave {
-    return TxtParser::PosSave->new(shift());
+sub copy {
+    my $txt = shift;
+
+    return bless [ @$txt ], ref($txt);
+}
+
+sub skipempty {
+    my $txt = shift;
+
+    my $n = 0;
+    while (@$txt && $txt->[0]->empty(@_)) {
+        shift @$txt;
+        $n ++;
+    }
+
+    return $n;
+}
+
+sub fetchln {
+    my $txt = shift;
+
+    my $s = shift(@$txt) || return;
+    return @_ ? $s->match(@_) : $s;
+}
+
+# ----------------------------------------------------------------------
+# ---
+# ---   Str
+# ---
+
+package Str;
+
+sub new {
+    my $class = shift;
+    my $s = shift;
+    return bless { @_, str => $s, len => length($s) }, $class;
 }
 
 sub err {
@@ -106,6 +215,7 @@ sub err {
     if (@_) {
         $s->{err} = shift;
         $s->{err} = sprintf($s->{err}, @_) if @_;
+        $! = $s->err;
 
         return;
     }
@@ -115,26 +225,21 @@ sub err {
     return sprintf('[row: %d, col: %d] %s', $s->{row}, $s->{col}, $s->{err}||'');
 }
 
-sub avail { return scalar @{ shift()->{txt}||[] }; }
-
-sub strnext {
-    my $s = shift;
-
-    $s->avail() || return;
-    $s->{row} ||= 0;
-    $s->{row} ++;
-    $s->{col} = 1;
-    $s->{str} = shift @{ $s->{txt}||[] };
-    $s->{len} = length $s->{str};
-
-    return defined( $s->{str} );
-}
-
-sub check {
+sub match {
     my ($s, $regex) = @_;
 
     defined( $s->{str} ) || return;
-    return $s->{str} =~ s/^($regex)//;
+    my @r = ($s->{str} =~ /($regex)/);
+
+    foreach my $r (@r) {
+        $r = Str->new(
+                $r,
+                row => $s->{row},
+                col => $s->{col} + index($s->{str}, $r)
+            );
+    }
+
+    return @r;
 }
 
 sub empty {
@@ -144,134 +249,4 @@ sub empty {
     return $nospace ? ($s->{str} eq '') : ($s->{str} =~ /^\s*$/);
 }
 
-sub skipempty {
-    my $s = shift;
-
-    my $n = 0;
-    while ($s->empty(@_)) {
-        $s->strnext();
-        $n ++;
-    }
-
-    return $n;
-}
-
-sub fetch {
-    my ($s, $regex) = @_;
-    
-    defined( $s->{str} ) || return;
-    return if $s->{str} !~ s/^($regex)//;
-
-    my $len = length $s->{str};
-    $s->{col} += $s->{len} - $len;
-    $s->{len} = $len;
-
-    return [ @{^CAPTURE} ];
-}
-
-sub fetchspace {
-    my $s = shift;
-
-    my $r = 0;
-    while (1) {
-        my $n = 0;
-        $s->fetch(qr/ /)    && ($n ++);
-        $s->fetch(qr/\t/)   && ($n += 4);
-        $n || last;
-        $r += $n;
-    }
-
-    return $r;
-}
-
-sub getyaml {
-    my $s = shift;
-
-    $s->skipempty();
-    $s->fetch(qr/\s*\-{3}/) || return {};
-
-    my $yaml = {};
-    my @cur = { space => 0, data => $yaml };
-
-    while ($s->avail()) {
-        # просто стираем пустые строки
-        $s->skipempty() && next;
-        # проверка на окончание yaml
-        $s->fetch(qr/\-{3}/) && last;
-
-        # Строки переносим в @yaml
-        # сначала разбираемся с уровнем вложенности
-        my $space = $s->fetchspace() || 0;
-        pop(@cur) while (@cur > 1) && ($cur[@cur-1]->{space} > $space);
-        my $c = $cur[@cur-1];
-
-        if ($space > $c->{space}) {
-            my $k = $c->{key} || return $s->err('YAML: Deeper level without key');
-            my $d = ( $c->{data}->{ $k } = {} );
-            push @cur, { space => $space, data => $d };
-            $c = $cur[@cur-1];
-        }
-
-        my $d = $c->{data};
-
-        # last - страховка от зацикливания
-        my $p = $s->possave();
-        my $r = $s->fetch(qr/(([a-zA-Z]+[a-zA-Z \-\d]+)\s*(?:\:\s*))(.*)?/) || last;
-        my (undef, $f, $k, $v) = @$r;
-        if (exists $d->{ $k }) {
-            return $s->err('YAML: Duplicate key: %s', $k);
-        }
-
-        $v = '' if !defined($v);
-        if ($v ne '') {
-            delete $c->{key};
-
-            if ($v =~ /^\"((\\.|[^\\\"]+)*)\"\s*$/) {
-                $v = $1;
-            }
-            elsif ($v =~ /^\"/) {
-                $p->{col} += length $f;
-                return $s->err('YAML: Not-correct string value');
-            }
-            elsif ($v =~ /^\-?\d$/) {
-                $v = int $v;
-            }
-        }
-        else {
-            $c->{key} = $k;
-        }
-
-        $d->{ $k } = $v;
-    }
-
-    return $yaml;
-}
-
-
-
-package TxtParser::PosSave;
-
-sub new {
-    my $class = shift;
-    my $s = shift() || return;
-
-    delete $s->{err};
-
-    return bless {
-        own => $s,
-        map { exists($s->{$_}) ? ($_ => $s->{$_}) : () }
-        qw/row col str len/
-    }, $class;
-}
-
-sub restore {
-    my $self = shift;
-
-    my $s = delete($self->{own}) || return;
-    $s->{$_} = $self->{$_} foreach grep { !ref($self->{$_}) } keys %$self;
-}
-
-DESTROY {
-    my $self = shift;
-    $self->restore() if ($self->{own}||{})->{err};
-}
+1;
