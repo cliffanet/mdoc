@@ -9,14 +9,19 @@ use Getopt::Long;
 # ----------------------------------------------------------------------
 my $p = arg();
 
-my $txt = Txt->fromfile($p->{file}->[0])
-    || err('Can\'t open file "%s": %s', $p->{file}->[0], $!);
+my $txt = Txt->fromfile($p->{file}->[0]) || err();
 
-my $yaml = yaml($txt) || err($!);
+my $yaml = yaml($txt) || err();
 
+my @p = ();
+while (my $par = paragraph($txt)) {
+    push @p, $par;
+}
 
 use Data::Dumper;
-print Dumper $yaml, $txt, $p;
+print Dumper $yaml, \@p, $txt, $p;
+
+@$txt && err();
 
 # ----------------------------------------------------------------------
 # ---
@@ -42,8 +47,7 @@ Options:
 }
 
 sub err {
-    my $s = shift;
-    $s = $s->err if ref($s) eq 'TxtParser';
+    my $s = @_ ? shift() : Err->last()->{err};
     $s = sprintf($s, @_) if @_;
     print STDERR $s."\n";
     exit -1;
@@ -81,7 +85,6 @@ sub yaml {
 
     $txt->skipempty();
     $txt->fetchln(qr/^\s*\-{3}/) || return {};
-    $_[0] = $txt;
 
     my $yaml = {};
     my @cur = { space => 0, data => $yaml };
@@ -137,8 +140,94 @@ sub yaml {
         $d->{ $key } = $val->{str};
     }
 
+    $_[0] = $txt;
     return $yaml;
 }
+
+
+# ----------------------------------------------------------------------
+# ---
+# ---   Paragraph
+# ---
+
+sub paragraph {
+    my $txt = $_[0]->copy();
+    my $level = $_[1] || 0;
+
+    $txt->skipempty();
+    @$txt || return;
+
+    my @f;
+    my $p =
+        !$level && (@f = $txt->fetchln(qr/^ {0,3}\\(pagebreak)\s*$/)) ?
+            {
+                type    => 'modifier',
+                name    => $f[1]
+            } :
+        !$level && (@f = $txt->fetchln(qr/^ {0,3}(\#)+\s+(.*)$/)) ?
+            {
+                type    => 'header',
+                level   => length($f[1]->{str}),
+                name    => $f[2]
+            } :
+        return $txt->[0]->err('Paragraph syntax error');
+    
+    $_[0] = $txt;
+    return $p;
+}
+
+
+# ----------------------------------------------------------------------
+# ---
+# ---   Err
+# ---
+
+package Err;
+
+use overload
+    'bool'      => sub { return; },
+    'nomethod'  => sub { shift()->{err} };
+
+my @all = ();
+
+sub import {
+    my $callpkg = caller(0);
+    $callpkg = caller(1) if $callpkg eq __PACKAGE__;
+    no strict 'refs';
+    *{$callpkg.'::err'} = sub {
+        return @_ ? __PACKAGE__->new(@_) : __PACKAGE__->last();
+    };
+}
+
+sub new {
+    my $class= shift;
+
+    my $s = shift();
+    $s = sprintf($s, @_) if @_;
+
+    my $self = bless { err => $s }, $class;
+    push @all, $self;
+
+    return $self;
+}
+
+sub all { return @all; }
+sub last {
+    @all || return {};
+    return $all[ @all-1 ];
+}
+
+sub clear { @all = (); }
+
+sub p {
+    my $self = shift;
+
+    $self->{ shift() } = shift() while @_ > 1;
+    
+    return $self->{ shift() } if @_;
+    return { %$self };
+}
+
 
 # ----------------------------------------------------------------------
 # ---
@@ -163,8 +252,10 @@ sub new {
 
 sub fromfile {
     my $class = shift;
+    my $fname = shift;
 
-    open(my $fh, shift()) || return;
+    open(my $fh, $fname)
+        || return Err->new('Can\'t open "%s": %s', $fname, $!);
     my $txt = $class->new( <$fh> );
     close $fh;
 
@@ -192,8 +283,15 @@ sub skipempty {
 sub fetchln {
     my $txt = shift;
 
-    my $s = shift(@$txt) || return;
-    return @_ ? $s->match(@_) : $s;
+    if (@_) {
+        @$txt || return;
+        my @r = $txt->[0]->match(@_);
+        @r || return;
+        shift @$txt;
+        return @r;
+    }
+
+    return shift @$txt;
 }
 
 # ----------------------------------------------------------------------
@@ -212,17 +310,11 @@ sub new {
 sub err {
     my $s = shift;
 
-    if (@_) {
-        $s->{err} = shift;
-        $s->{err} = sprintf($s->{err}, @_) if @_;
-        $! = $s->err;
+    $s->{row} || return Err->new(@_);
+    my $e = Err->new('[row: %d, col: %d] '.shift(), $s->{row}, $s->{col}, @_);
+    $e->p($_ => $s->{$_}) foreach grep { exists $s->{$_} } qw/row col str/;
 
-        return;
-    }
-
-    $s->{row} || return $s->{err}||'';
-
-    return sprintf('[row: %d, col: %d] %s', $s->{row}, $s->{col}, $s->{err}||'');
+    return $e;
 }
 
 sub match {
