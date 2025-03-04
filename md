@@ -11,15 +11,11 @@ my $p = arg();
 
 my $txt = Txt->fromfile($p->{file}->[0]) || err();
 
-my $yaml = yaml($txt) || err();
-
-my @p = ();
-while (my $par = paragraph($txt)) {
-    push @p, $par;
-}
+my $yaml    = yaml($txt) || err();
+my $md      = paragraph($txt) || err();
 
 use Data::Dumper;
-print Dumper $yaml, \@p, $txt, $p;
+print Dumper $yaml, $md;#, $txt, $p;
 
 @$txt && err();
 
@@ -152,28 +148,86 @@ sub yaml {
 
 sub paragraph {
     my $txt = $_[0]->copy();
-    my $level = $_[1] || 0;
 
-    $txt->skipempty();
-    @$txt || return;
+    my $t = Tree->new();
 
-    my @f;
-    my $p =
-        !$level && (@f = $txt->fetchln(qr/^ {0,3}\\(pagebreak)\s*$/)) ?
-            {
-                type    => 'modifier',
-                name    => $f[1]
-            } :
-        !$level && (@f = $txt->fetchln(qr/^ {0,3}(\#)+\s+(.*)$/)) ?
-            {
-                type    => 'header',
-                level   => length($f[1]->{str}),
-                name    => $f[2]
-            } :
-        return $txt->[0]->err('Paragraph syntax error');
+    while (@$txt) {
+        $txt->skipempty();
+        my $s = shift(@$txt) || last;
+
+        my @f;
+        # блоки, которые могут быть только в корне
+        if (@f = $s->match(qr/^ {0,3}\\(pagebreak)\s*$/)) {
+            $t->top();
+            $t->add(
+                modifier =>
+                name    => $f[1]->{str}
+            );
+            next;
+        }
+        if (@f = $s->match(qr/^ {0,3}(\#+)\s+(.*)$/)) {
+            $t->top();
+            $t->add(
+                header =>
+                deep    => length($f[1]->{str}),
+                content => [ $f[2] ]
+            );
+            next;
+        }
+
+        # Остальные блоки могут иметь подвложенность
+        my ($level, $s_) = $s->level($t->{level});
+        # повышаем уровень до текущего
+        $t->up() while $t->{level} > $level;
+        $s = $s_;
+
+        # проверяем, возможно это вложенный текстовый блок
+        my ($l1, $s1) = $s->level(1);
+        if ($l1 > 0) {
+            my $c = [$s1];
+            while (my ($s) = @$txt) {
+                last if $s->empty();
+                ($l1, $s1) = $s->level($t->{level} + 1);
+                last if $l1 <= $t->{level};
+                shift(@$txt);
+                push @$c, $s1;
+            }
+        }
+
+        # список
+        elsif (@f = $s->match(qr/^ {0,3}([\*\-]|\d+\.?)\s+(.*)$/)) {
+            if ($t->{last}->{type} ne 'list') {
+                $t->add(list => list => []);
+            }
+            my $list = $t->{last};
+            my $item = $t->down(
+                item =>
+                $f[1]->hinf('mode'),
+                title   => [$f[2]]
+            );
+            push @{ $list->{list} }, $item;
+        }
+
+        else {
+            # обычный текстовый блок
+            my $c = [$s];
+            while (my $s = shift(@$txt)) {
+                last if $s->empty();
+                if (@f = $s->match(qr/^(\s)\s*(\S.+)$/)) {
+                    #push @$c, $f[1];
+                    $s = $f[2];
+                }
+                push @$c, $s;
+            }
+            $t->add(
+                paragraph =>
+                content => $c
+            );
+        }
+    }
     
     $_[0] = $txt;
-    return $p;
+    return $t->root();
 }
 
 
@@ -317,17 +371,43 @@ sub err {
     return $e;
 }
 
+sub pos {
+    my $s = shift;
+
+    return
+        map {
+            exists($s->{$_}) ?
+                ($_ => $s->{$_}) :
+                ()
+        } qw/row col/;
+}
+
+sub hinf {
+    my $s = shift;
+    my $f = shift() || 'str';
+    return
+        $f => $s->{str},
+        $s->pos();
+}
+
 sub match {
     my ($s, $regex) = @_;
 
     defined( $s->{str} ) || return;
-    my @r = ($s->{str} =~ /($regex)/);
+    my @r = ($s->{str} =~ /($regex)/p);
+    my $m = ${^MATCH};
+    my $c = length ${^PREMATCH};
 
     foreach my $r (@r) {
+        my $i = index($m, $r);
+        if ($i > 0) {
+            $c += $i;
+            $m = substr($m, $i, length($m) - $i);
+        }
         $r = Str->new(
                 $r,
                 row => $s->{row},
-                col => $s->{col} + index($s->{str}, $r)
+                col => $s->{col} + $c
             );
     }
 
@@ -339,6 +419,103 @@ sub empty {
 
     defined( $s->{str} ) || return 1;
     return $nospace ? ($s->{str} eq '') : ($s->{str} =~ /^\s*$/);
+}
+
+sub level {
+    my ($s, $max) = @_;
+
+    my $level = 0;
+    while (
+            (!defined($max) || ($max > 0)) &&
+            (my @s = $s->match(qr/^(    |\t)(.+)$/))
+        ) {
+        $level ++;
+        $max -- if defined($max);
+        $s = $s[2];
+    }
+
+    return ($level, $s) if wantarray;
+    return $level;
+}
+
+package Tree;
+
+sub new {
+    my $class = shift;
+
+    my $root = {
+        @_,
+        type    => 'root',
+        level   => 0,
+        list    => [],
+    };
+
+    my $self = {
+        tree    => [$root],
+        root    => $root,
+        level   => 0,
+    };
+
+    return bless $self, $class;
+}
+
+sub root { return shift()->{tree}->[0]; }
+
+sub add {
+    my $self = shift;
+    my $type = shift;
+
+    $self->{last} = { @_, type => $type };
+    push @{ $self->{node}->{list} }, $self->{last};
+}
+
+sub _upd {
+    my $self = shift;
+    my $node = shift();
+
+    $self->{node}   = $node;
+    $self->{level}  = $node->{level};
+    if (@{ $node->{list} }) {
+        $self->{last} = $node->{list}->[ @{ $node->{list} } - 1 ];
+    }
+    else {
+        delete $self->{last};
+    }
+
+    return $node;
+}
+
+sub up {
+    my $self = shift;
+
+    my $t = $self->{tree};
+
+    pop(@$t) while @$t > 1;
+
+    return $self->_upd($t->[ @$t - 1 ]);
+}
+
+sub top {
+    my $self = shift;
+    my $node = $self->{tree}->[0];
+    $self->{tree} = [ $node ];
+    return $self->_upd($node);
+}
+
+sub down {
+    my $self = shift;
+    my $type = shift;
+
+    my $node = {
+        type    => $type,
+        @_,
+        level   => $self->{level} + 1,
+        list    => [],
+    };
+    push @{ $self->{tree} }, $node;
+    $self->_upd($node);
+
+    return $node;
 }
 
 1;
