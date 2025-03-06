@@ -177,7 +177,8 @@ sub paragraph {
 
         # Остальные блоки могут иметь подвложенность
         my ($level, $s_) = $s->level($t->{level});
-        # повышаем уровень до текущего
+        # если уровень вложенности в строке $s оказался выше, чем в дереве $t
+        # повышаем уровень в $t
         $t->up() while $t->{level} > $level;
         $s = $s_;
 
@@ -192,12 +193,16 @@ sub paragraph {
                 shift(@$txt);
                 push @$c, $s1;
             }
+            $t->add(
+                textblock =>
+                text => $c
+            );
         }
 
         # список
         elsif (@f = $s->match(qr/^ {0,3}([\*\-]|\d+\.?)\s+(.*)$/)) {
             if ($t->{last}->{type} ne 'list') {
-                $t->add(list => list => []);
+                $t->add(list => item => []);
             }
             my $list = $t->{last};
             my $item = $t->down(
@@ -205,11 +210,76 @@ sub paragraph {
                 $f[1]->hinf('mode'),
                 title   => [$f[2]]
             );
-            push @{ $list->{list} }, $item;
+            push @{ $list->{item} }, $item;
         }
 
+        # таблица 1
+        elsif (@f = $s->match(qr/^ {0,3}(\-[\- ]{3,})$/)) {
+            my @width = $s->split(qw/\s+/);
+            my $row = [ map { [] } @width ];
+            my $rall= [ $row ];
+
+            while (my $s = shift(@$txt)) {
+                if ($s->empty()) {
+                    if (grep { @$_ > 0 } @$rall) {
+                        $row = [ map { [] } @width ];
+                        push @$rall, $row;
+                    }
+                    next;
+                }
+                if ($s->match(qr/^\s*\-[\- ]*$/)) {
+                    last;
+                }
+
+                (undef, $s) = $s->level($level);
+                my @row = @$row;
+                foreach my $w (@width) {
+                    my $r = shift @row;
+                    my $sc = $s->substr($w->{col}-1, $w->{len}) || last;
+                    next if $sc->empty();
+                    if (@f = $sc->match(qr/^\s*(.*\S+)\s*$/)) {
+                        $sc = $f[1];
+                    }
+                    push @$r, $sc;
+                }
+            }
+
+            $t->add(
+                table =>
+                mode    => 1,
+                width   => [ map { $_->{len} } @width ],
+                row     => $rall
+            );
+        }
+
+        # таблица 2
+        elsif (@f = $s->match(qr/^ {0,3}(\|([^\|]+\|){2,})$/)) {
+
+        }
+
+        # таблица 3
+        elsif (@f = $s->match(qr/^ {0,3}(([^\|]+\|){2,}[^\|]*)$/)) {
+
+        }
+
+        # code-блок
+        elsif (@f = $s->match(qr/^ {0,3}\`\`\`(.*)$/)) {
+            my $lang = $f[1]->{str};
+            my $c = [];
+            while (my $s = shift(@$txt)) {
+                my ($l1, $s1) = $s->level($level);
+                last if $s1->match(qr/^ {0,3}\`\`\`/);
+                push @$c, $s1;
+            }
+            $t->add(
+                code =>
+                $lang ? (lang => $lang) : (),
+                text => $c
+            );
+        }
+
+        # обычный текстовый блок
         else {
-            # обычный текстовый блок
             my $c = [$s];
             while (my $s = shift(@$txt)) {
                 last if $s->empty();
@@ -221,7 +291,7 @@ sub paragraph {
             }
             $t->add(
                 paragraph =>
-                content => $c
+                text => $c
             );
         }
     }
@@ -402,7 +472,7 @@ sub match {
         my $i = index($m, $r);
         if ($i > 0) {
             $c += $i;
-            $m = substr($m, $i, length($m) - $i);
+            $m = CORE::substr($m, $i, length($m) - $i);
         }
         $r = Str->new(
                 $r,
@@ -412,6 +482,54 @@ sub match {
     }
 
     return @r;
+}
+
+sub split {
+    my ($s, $regex, $count) = @_;
+    defined( $s->{str} ) || return;
+
+    my @r = ();
+    while ($s->{str} =~ /$regex/p) {
+        push @r,
+            Str->new(
+                ${^PREMATCH},
+                row => $s->{row},
+                col => $s->{col}
+            );
+        $s = Str->new(
+                ${^POSTMATCH},
+                row => $s->{row},
+                col => $s->{col} + length(${^PREMATCH}) + length(${^MATCH})
+            );
+        if (defined $count) {
+            $count--;
+            last if $count <= 0;
+        }
+    }
+
+    return @r, $s;
+}
+
+sub substr {
+    my $s = shift;
+    my $c = shift;
+    defined( $s->{str} ) || return;
+
+    my $str = @_ ?
+        # Если просто передавать @_ напрямую, то у CORE::substr
+        # некорректно работает проверка количества аргументов
+        CORE::substr($s->{str}, $c, shift) :
+        CORE::substr($s->{str}, $c);
+    defined( $str ) || return;
+
+    $c += $s->{len} if $c < 0;
+    $c = 0 if $c < 0;
+
+    return Str->new(
+                $str,
+                row => $s->{row},
+                col => $s->{col} + $c
+            );
 }
 
 sub empty {
@@ -447,7 +565,7 @@ sub new {
         @_,
         type    => 'root',
         level   => 0,
-        list    => [],
+        content => [],
     };
 
     my $self = {
@@ -466,7 +584,7 @@ sub add {
     my $type = shift;
 
     $self->{last} = { @_, type => $type };
-    push @{ $self->{node}->{list} }, $self->{last};
+    push @{ $self->{node}->{content} }, $self->{last};
 }
 
 sub _upd {
@@ -475,8 +593,8 @@ sub _upd {
 
     $self->{node}   = $node;
     $self->{level}  = $node->{level};
-    if (@{ $node->{list} }) {
-        $self->{last} = $node->{list}->[ @{ $node->{list} } - 1 ];
+    if (@{ $node->{content} }) {
+        $self->{last} = $node->{content}->[ @{ $node->{content} } - 1 ];
     }
     else {
         delete $self->{last};
@@ -510,7 +628,7 @@ sub down {
         type    => $type,
         @_,
         level   => $self->{level} + 1,
-        list    => [],
+        content => [],
     };
     push @{ $self->{tree} }, $node;
     $self->_upd($node);
