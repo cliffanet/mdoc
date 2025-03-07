@@ -217,6 +217,30 @@ sub paragraph {
             push @{ $list->{item} }, $item;
         }
 
+        # горизонтальная линия
+        elsif ($s->match(qr/^\s*\-\-\-\s*$/)) {
+            $t->add('hline');
+        }
+
+        # горизонтальная линия с текстом
+        elsif (@$txt && $txt->[0]->match(qr/^\s*\-\-\-\s*$/)) {
+            shift(@$txt);
+            $t->add(
+                hline =>
+                title => [$s]
+            );
+        }
+
+        # badge
+        elsif (@f = $s->match(qr/^\s*\[([^\]]+)\]\s*\:\s*(\S+)\s+(.*\S)\s*$/)) {
+            shift(@$txt);
+            push @{ $t->root()->{badge} ||= [] }, {
+                code => $f[1]->{str},
+                href => $f[2]->{str},
+                title => [$f[3]->cut(qr/^[\"\']/)->cut(qr/[\"\']$/)]
+            };
+        }
+
         # таблица 1
         elsif (
                 $s->match(qr/\|/) &&
