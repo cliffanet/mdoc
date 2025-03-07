@@ -198,9 +198,13 @@ sub paragraph {
                 text => $c
             );
         }
+        # т.к. мы первым делом проверили на более глубокую вложенность текста,
+        # то теперь мы уверены, что у нас перед данными не более трёх пробелов
+        # и больше нет пробельных символов, теперь мы можем вначале строки
+        # указывать \s+ вместо  {0,3}
 
         # список
-        elsif (@f = $s->match(qr/^ {0,3}([\*\-]|\d+\.?)\s+(.*)$/)) {
+        elsif (@f = $s->match(qr/^\s*([\*\-]|\d+\.?)\s+(.*)$/)) {
             if ($t->{last}->{type} ne 'list') {
                 $t->add(list => item => []);
             }
@@ -214,7 +218,50 @@ sub paragraph {
         }
 
         # таблица 1
-        elsif (@f = $s->match(qr/^ {0,3}(\-[\- ]{3,})$/)) {
+        elsif (
+                $s->match(qr/\|/) &&
+                @$txt &&
+                $txt->[0]->match(qr/^\s*\|?(\s*\:?\-+\:?\s*\|)+\s*\:?\-+\:?\s*\|?\s*$/)
+            ) {
+            # разбиваем на колонки
+            my $split = sub { shift()->cut(qr/^\s*\|/)->cut(qr/\|\s*$/)->split(qr/\|/, @_); };
+            # убираем пробелы в колонках
+            my $space = sub { map { $_->cut(qr/^\s+/)->cut(qr/\s+$/) } @_; };
+            # всё вместе
+            my $col = sub { $space->( $split->(@_) ); };
+
+            my @width = $split->($s);
+            my $hdr = [ map { [$_] } $space->(@width) ];
+            my @align = 
+                map {
+                    my $l = $_->match(qr/^\:/);
+                    my $r = $_->match(qr/\:$/);
+                    $l && $r    ? 'c' :
+                    $l          ? 'l' :
+                    $r          ? 'r' : ''
+                }
+                $col->( shift(@$txt) );
+            my $rall = [];
+
+            while (@$txt && $txt->[0]->match(qr/\|/)) {
+                push @$rall, [
+                    map { [$_] }
+                    $col->( shift(@$txt) )
+                ];
+            }
+
+            $t->add(
+                table =>
+                mode    => 1,
+                width   => [ map { $_->{len} } @width ],
+                align   => [ @align ],
+                hdr     => $hdr,
+                row     => $rall
+            );
+        }
+
+        # таблица 2
+        elsif ($s->match(qr/^\s*(\-[\- ]{3,})$/)) {
             my @width = $s->split(qw/\s+/);
             my $row = [ map { [] } @width ];
             my $rall= [ $row ];
@@ -231,45 +278,32 @@ sub paragraph {
                     last;
                 }
 
-                (undef, $s) = $s->level($level);
+                $s = $s->delevel($level);
                 my @row = @$row;
                 foreach my $w (@width) {
                     my $r = shift @row;
                     my $sc = $s->substr($w->{col}-1, $w->{len}) || last;
                     next if $sc->empty();
-                    if (@f = $sc->match(qr/^\s*(.*\S+)\s*$/)) {
-                        $sc = $f[1];
-                    }
-                    push @$r, $sc;
+                    push @$r, $sc->cut(qr/^\s+/)->cut(qr/\s+$/);
                 }
             }
 
             $t->add(
                 table =>
-                mode    => 1,
+                mode    => 2,
                 width   => [ map { $_->{len} } @width ],
                 row     => $rall
             );
         }
 
-        # таблица 2
-        elsif (@f = $s->match(qr/^ {0,3}(\|([^\|]+\|){2,})$/)) {
-
-        }
-
-        # таблица 3
-        elsif (@f = $s->match(qr/^ {0,3}(([^\|]+\|){2,}[^\|]*)$/)) {
-
-        }
-
         # code-блок
-        elsif (@f = $s->match(qr/^ {0,3}\`\`\`(.*)$/)) {
+        elsif (@f = $s->match(qr/^\s*\`\`\`(.*)$/)) {
             my $lang = $f[1]->{str};
             my $c = [];
             while (my $s = shift(@$txt)) {
-                my ($l1, $s1) = $s->level($level);
-                last if $s1->match(qr/^ {0,3}\`\`\`/);
-                push @$c, $s1;
+                $s = $s->delevel($level);
+                last if $s->match(qr/^ {0,3}\`\`\`/);
+                push @$c, $s;
             }
             $t->add(
                 code =>
@@ -283,11 +317,7 @@ sub paragraph {
             my $c = [$s];
             while (my $s = shift(@$txt)) {
                 last if $s->empty();
-                if (@f = $s->match(qr/^(\s)\s*(\S.+)$/)) {
-                    #push @$c, $f[1];
-                    $s = $f[2];
-                }
-                push @$c, $s;
+                push @$c, $s->cut(qr/^\s+/);
             }
             $t->add(
                 paragraph =>
@@ -378,7 +408,7 @@ sub fromfile {
     my $class = shift;
     my $fname = shift;
 
-    open(my $fh, $fname)
+    open(my $fh, '<:encoding(UTF-8)', $fname)
         || return Err->new('Can\'t open "%s": %s', $fname, $!);
     my $txt = $class->new( <$fh> );
     close $fh;
@@ -487,6 +517,7 @@ sub match {
 sub split {
     my ($s, $regex, $count) = @_;
     defined( $s->{str} ) || return;
+    $regex || return $s;
 
     my @r = ();
     while ($s->{str} =~ /$regex/p) {
@@ -532,6 +563,26 @@ sub substr {
             );
 }
 
+sub cut {
+    my ($s, $regex) = @_;
+    defined( $s->{str} ) || return;
+
+    return $s if $s->{str} !~ /$regex/p;
+
+    return
+        length(${^PREMATCH}) ?
+            Str->new(
+                ${^PREMATCH} . ${^POSTMATCH},
+                row => $s->{row},
+                col => $s->{col}
+            ) :
+            Str->new(
+                ${^POSTMATCH},
+                row => $s->{row},
+                col => $s->{col} + length( ${^MATCH} )
+            );
+}
+
 sub empty {
     my ($s, $nospace) = @_;
 
@@ -555,6 +606,16 @@ sub level {
     return ($level, $s) if wantarray;
     return $level;
 }
+
+sub delevel {
+    my ($s, $max) = @_;
+    return ($s->level($max))[1];
+}
+
+# ----------------------------------------------------------------------
+# ---
+# ---   Tree
+# ---
 
 package Tree;
 
