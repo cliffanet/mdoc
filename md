@@ -18,8 +18,6 @@ my $md      = txtstyle($root);
 use Data::Dumper;
 print Dumper $yaml, $md;#, $txt, $p;
 
-@$txt && err();
-
 # ----------------------------------------------------------------------
 # ---
 # ---   Error
@@ -148,7 +146,12 @@ sub yaml {
 # ---
 
 sub paragraph {
-    my $txt = $_[0]->copy();
+    return _paragraph($_[0]->copy(), 1);
+}
+
+sub _paragraph {
+    my $txt = shift;
+    my $isroot = shift;
 
     my $t = Tree->new();
 
@@ -158,7 +161,7 @@ sub paragraph {
 
         my @f;
         # блоки, которые могут быть только в корне
-        if (@f = $s->match(qr/^ {0,3}\\(pagebreak)\s*$/)) {
+        if ($isroot && (@f = $s->match(qr/^ {0,3}\\(pagebreak)\s*$/))) {
             $t->top();
             $t->add(
                 modifier =>
@@ -166,7 +169,7 @@ sub paragraph {
             );
             next;
         }
-        if (@f = $s->match(qr/^ {0,3}(\#+)\s+(.*)$/)) {
+        if ($isroot && (@f = $s->match(qr/^ {0,3}(\#+)\s+(.*)$/))) {
             $t->top();
             $t->add(
                 header =>
@@ -337,6 +340,21 @@ sub paragraph {
             );
         }
 
+        # quote-блок
+        elsif (@f = $s->match(qr/^\s*\>\s{,4}(.*)$/)) {
+            my @txt = ($f[1]);
+            while (@$txt && (@f = $txt->[0]->match(qr/^\s*\>\s{,4}(.*)$/))) {
+                shift @$txt;
+                push @txt, $f[1];
+            }
+            my $r = _paragraph( Txt->new(@txt) );
+            
+            $t->add(
+                qoute =>
+                text => $r->{content}
+            );
+        }
+
         # обычный текстовый блок
         else {
             my $c = [$s];
@@ -351,7 +369,6 @@ sub paragraph {
         }
     }
     
-    $_[0] = $txt;
     return $t->root();
 }
 
@@ -469,9 +486,9 @@ sub _txtstyle_str {
                 type    => 'image',
                 url     => $_[2]->{str},
                 $_[1]->{len} ?
-                    (alt    => $_[1]) : (),
+                    (alt    => $_[1]->{str}) : (),
                 $_[3] && $_[3]->{len} ?
-                    (title  => $_[3]) : (),
+                    (title  => $_[3]->{str}) : (),
             };
         }
     );
@@ -572,6 +589,7 @@ sub new {
     my $r = 0;
     foreach (@$txt) {
         $r++;
+        next if ref($_) eq 'Str';
         s/[\r\n]+//;
         $_ = Str->new($_, row => $r, col => 1);
     }
@@ -810,13 +828,14 @@ sub new {
         content => [],
     };
 
-    my $self = {
+    my $self = bless {
         tree    => [$root],
         root    => $root,
         level   => 0,
-    };
+    }, $class;
+    $self->_upd($root);
 
-    return bless $self, $class;
+    return $self;
 }
 
 sub root { return shift()->{tree}->[0]; }
