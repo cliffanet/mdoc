@@ -12,7 +12,8 @@ my $p = arg();
 my $txt = Txt->fromfile($p->{file}->[0]) || err();
 
 my $yaml    = yaml($txt) || err();
-my $md      = paragraph($txt) || err();
+my $root    = paragraph($txt) || err();
+my $md      = txtstyle($root);
 
 use Data::Dumper;
 print Dumper $yaml, $md;#, $txt, $p;
@@ -191,7 +192,7 @@ sub paragraph {
                 ($l1, $s1) = $s->level($t->{level} + 1);
                 last if $l1 <= $t->{level};
                 shift(@$txt);
-                push @$c, $s1;
+                push @$c, { $s1->hinf() };
             }
             $t->add(
                 textblock =>
@@ -327,7 +328,7 @@ sub paragraph {
             while (my $s = shift(@$txt)) {
                 $s = $s->delevel($level);
                 last if $s->match(qr/^ {0,3}\`\`\`/);
-                push @$c, $s;
+                push @$c, { $s->hinf() };
             }
             $t->add(
                 code =>
@@ -352,6 +353,156 @@ sub paragraph {
     
     $_[0] = $txt;
     return $t->root();
+}
+
+
+# ----------------------------------------------------------------------
+# ---
+# ---   TxtStyle
+# ---
+sub _txtstyle_hash {
+    my $h = shift;
+
+    my @h = ();
+    foreach my $k (keys %$h) {
+        my @v = txtstyle($h->{$k});
+        push @h, $k => @v > 1 ? [@v] : $v[0];
+    }
+
+    return { @h };
+}
+
+sub _txtstyle_match {
+    my $f = pop;
+    my $q = pop;
+
+    my @r = ();
+    foreach my $s (@_) {
+        if (ref($s) ne 'Str') {
+            push @r, $s;
+            next;
+        }
+
+        my @match = $s->match($q);
+        if (!@match) {
+            push @r, $s;
+            next;
+        }
+
+        if (length ${^PREMATCH}) {
+            push @r, Str->new(
+                ${^PREMATCH},
+                row => $s->{row},
+                col => $s->{col}
+            );
+        }
+        my @post;
+        if (length ${^POSTMATCH}) {
+            @post = Str->new(
+                ${^POSTMATCH},
+                row => $s->{row},
+                col => $s->{col} + length(${^PREMATCH}) + length(${^MATCH})
+            );
+        }
+
+        push @r, $f->(@match), @post;
+    }
+
+    return @r;
+}
+
+sub _txtstyle_str {
+    my @r = shift;
+
+    @r = _txtstyle_match(@r,
+        qr/\*\*\b(.+?)\b\*\*/,
+        sub {
+            return {
+                type    => 'bold',
+                text    => [ _txtstyle_str($_[1]) ]
+            };
+        }
+    );
+    @r = _txtstyle_match(@r,
+        qr/__\b(.+?)\b__/,
+        sub {
+            return {
+                type => 'bold',
+                text => [ _txtstyle_str($_[1]) ]
+            };
+        }
+    );
+
+    @r = _txtstyle_match(@r,
+        qr/\*\b(.+?)\b\*/,
+        sub {
+            return {
+                type    => 'italic',
+                text    => [ _txtstyle_str($_[1]) ]
+            };
+        }
+    );
+    @r = _txtstyle_match(@r,
+        qr/_\b(.+?)\b_/,
+        sub {
+            return {
+                type    => 'italic',
+                text    => [ _txtstyle_str($_[1]) ]
+            };
+        }
+    );
+
+    @r = _txtstyle_match(@r,
+        qr/\`(.+?)\`/,
+        sub {
+            return {
+                type    => 'inlinecode',
+                text    => [ _txtstyle_str($_[1]) ]
+            };
+        }
+    );
+
+    @r = _txtstyle_match(@r,
+        qr/\!\[(.*?)\]\((.+?)(?:\s+\"(.*?)\")?\)/,
+        sub {
+            return {
+                type    => 'image',
+                url     => $_[2]->{str},
+                $_[1]->{len} ?
+                    (alt    => $_[1]) : (),
+                $_[3] && $_[3]->{len} ?
+                    (title  => $_[3]) : (),
+            };
+        }
+    );
+
+    @r = _txtstyle_match(@r,
+        qr/\[(.+?)\]\((.+?)\)/,
+        sub {
+            return {
+                type    => 'href',
+                text    => [ _txtstyle_str($_[1]) ],
+                url     => $_[2]->{str}
+            };
+        }
+    );
+}
+
+sub txtstyle {
+    my @r =
+        map {
+            ref($_) eq 'HASH' ?
+                _txtstyle_hash($_) :
+            ref($_) eq 'ARRAY' ?
+                [ txtstyle(@$_) ] :
+            ref($_) eq 'Str' ?
+                _txtstyle_str($_) :
+                $_;
+        } @_;
+
+    @r || return;
+    return $r[0] if @r == 1;
+    return @r;
 }
 
 
@@ -443,7 +594,7 @@ sub fromfile {
 sub copy {
     my $txt = shift;
 
-    return bless [ @$txt ], ref($txt);
+    return bless [ map { $_->copy() } @$txt ], ref($txt);
 }
 
 sub skipempty {
@@ -483,6 +634,12 @@ sub new {
     my $class = shift;
     my $s = shift;
     return bless { @_, str => $s, len => length($s) }, $class;
+}
+
+sub copy {
+    my $s = shift();
+
+    return bless { %$s }, ref($s);
 }
 
 sub err {
