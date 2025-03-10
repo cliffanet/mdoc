@@ -371,97 +371,50 @@ sub _txtstyle_hash {
     return { @h };
 }
 
-sub _txtstyle_match {
-    my $f = pop;
-    my $q = pop;
-
-    my @r = ();
-    foreach my $s (@_) {
-        if (ref($s) ne 'Str') {
-            push @r, $s;
-            next;
-        }
-
-        my @match = $s->match($q);
-        if (!@match) {
-            push @r, $s;
-            next;
-        }
-
-        if (length ${^PREMATCH}) {
-            push @r, Str->new(
-                ${^PREMATCH},
-                row => $s->{row},
-                col => $s->{col}
-            );
-        }
-        my @post;
-        if (length ${^POSTMATCH}) {
-            @post = Str->new(
-                ${^POSTMATCH},
-                row => $s->{row},
-                col => $s->{col} + length(${^PREMATCH}) + length(${^MATCH})
-            );
-        }
-
-        push @r, $f->(@match), @post;
-    }
-
-    return @r;
-}
-
 sub _txtstyle_str {
-    my @r = shift;
+    my @str = shift;
 
-    @r = _txtstyle_match(@r,
-        qr/\*\*\b(.+?)\b\*\*/,
+    my @q = (
+        qr/\*\*(\S(.*\S)?)\*\*/,
         sub {
             return {
                 type    => 'bold',
                 text    => [ _txtstyle_str($_[1]) ]
             };
-        }
-    );
-    @r = _txtstyle_match(@r,
-        qr/__\b(.+?)\b__/,
+        },
+
+        qr/__(\S(.*\S)?)__/,
         sub {
             return {
                 type => 'bold',
                 text => [ _txtstyle_str($_[1]) ]
             };
-        }
-    );
+        },
 
-    @r = _txtstyle_match(@r,
-        qr/\*\b(.+?)\b\*/,
+        qr/\*(\S(.*\S)?)\*/,
         sub {
             return {
                 type    => 'italic',
                 text    => [ _txtstyle_str($_[1]) ]
             };
-        }
-    );
-    @r = _txtstyle_match(@r,
-        qr/_\b(.+?)\b_/,
+        },
+
+        qr/_(\S(.*\S)?)_/,
         sub {
             return {
                 type    => 'italic',
                 text    => [ _txtstyle_str($_[1]) ]
             };
-        }
-    );
+        },
 
-    @r = _txtstyle_match(@r,
         qr/\`(.+?)\`/,
         sub {
             return {
                 type    => 'inlinecode',
-                text    => [ _txtstyle_str($_[1]) ]
+                $_[1]->hinf()
             };
-        }
-    );
+        },
 
-    @r = _txtstyle_match(@r,
         qr/\!\[(.*?)\]\((.+?)(?:\s+\"(.*?)\")?\)/,
         sub {
             return {
@@ -472,10 +425,8 @@ sub _txtstyle_str {
                 $_[3] && $_[3]->{len} ?
                     (title  => $_[3]->{str}) : (),
             };
-        }
-    );
+        },
 
-    @r = _txtstyle_match(@r,
         qr/\[(.+?)\]\((.+?)\)/,
         sub {
             return {
@@ -485,6 +436,54 @@ sub _txtstyle_str {
             };
         }
     );
+
+    my @r = ();
+    top: while (my $s = shift @str) {
+        # усложняем алгоритм поиска
+        # будем посимвольно перемещаться по строке слева направо
+        # и на каждом шаге проверять все шаблоны.
+        #
+        # Это нужно, чтобы не было косяков, когда у нас один шаблон
+        # оказался внутри другого шаблона, например:
+        #       _You **can** combine them_
+        #
+        # При простом линейном прогоне всех шаблонов по строке,
+        # если у нас шаблон /**bold**/ окажется первым в списке,
+        # то он разделит строку на три части и шаблон /_italic_/
+        # уже не сработает.
+        #
+        # В более сложном алгоритме мы в данном примере сначала
+        # обнаружим /_italic_/ (даже если этот шаблон не первый),
+        # а уже внутри найденного рекурсией будем заного искать
+        # все шаблоны и найдём там: **can**
+        for (my $i = 0; $i < $s->{len}; $i++) {
+            my @q1 = @q;
+            my $s1 = $s->substr($i);
+            while (my $q = shift @q1) {
+                my $get = shift @q1;
+                my @m   = $s1->match(qr/^$q/);
+                @m || next;
+                # нашли совпадение
+                # в @r отправим всё, что находится до совпадения
+                if ($i > 0) {
+                    push @r, $s->substr(0, $i);
+                }
+                # и само совпадение
+                push @r, $get->(@m);
+                # а в @str отправим всё, что оказалось после совпадения
+                if ((my $b = $m[0]->{len}) < $s1->{len}) {
+                    unshift @str, $s1->substr($b, $s1->{len}-$b);
+                }
+
+                next top;
+            }
+        }
+
+        # не найдено совпадений, отправляем $s в @r как есть
+        push @r, $s;
+    }
+
+    return @r;
 }
 
 sub txtstyle {
