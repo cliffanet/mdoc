@@ -6,6 +6,13 @@ use utf8;
 
 use Getopt::Long;
 
+my $lib;
+BEGIN {
+    $lib = $0;
+    $lib =~ s/\/?[^\/\\]+$//;
+}
+use lib $lib;
+
 # ----------------------------------------------------------------------
 my $p = arg();
 
@@ -18,6 +25,11 @@ my $cont    = paragraph($txt) || err();
 use Data::Dumper;
 print Dumper $yaml, $cont;#, $txt, $p;
 
+my $out = 'out::' . $p->{type};
+$out = $out->new(%$yaml);
+$out->make(@$cont);
+$out->save($p->{file}->[1]) || err('Can\'t save to \'%s\': %s', $p->{file}->[1], $!);
+
 # ----------------------------------------------------------------------
 # ---
 # ---   Error
@@ -26,6 +38,7 @@ print Dumper $yaml, $cont;#, $txt, $p;
 sub usage {
     my $s = shift();
 
+    $s = sprintf($s, @_) if @_;
     print "$s\n" if defined($s);
     print "\n" if $s;
 
@@ -60,11 +73,21 @@ sub arg {
 
     GetOptions(
         'help+'     => \$h,
-        'type=s'    => \$r->{type},
         '<>'        => sub { push @{ $r->{file}||=[] }, shift(); },
     ) || return usage('');
     return usage() if $h;
-    return usage('Not defined source file') if !$r->{file};
+
+    $r->{file} ||
+        return usage('Not defined source file');
+
+    (@{ $r->{file} } >= 2) ||
+        return usage('Not defined destination file');
+    ($r->{file}->[1] =~ /\.([a-z]{2,5})$/i) ||
+        return usage('Can\'t check type of destination file');
+
+    $r->{type} = lc $1;
+    eval("require out::$r->{type};") ||
+        return usage('Type \'%s\' of destination file not found: %s', $r->{type}, $@);
 
     return $r;
 }
