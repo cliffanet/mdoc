@@ -12,11 +12,11 @@ my $p = arg();
 my $txt = Txt->fromfile($p->{file}->[0]) || err();
 
 my $yaml    = yaml($txt) || err();
-my $root    = paragraph($txt) || err();
-my $md      = txtstyle($root);
+my $cont    = paragraph($txt) || err();
+   $cont    = txtstyle($cont);
 
 use Data::Dumper;
-print Dumper $yaml, $md;#, $txt, $p;
+print Dumper $yaml, $cont;#, $txt, $p;
 
 # ----------------------------------------------------------------------
 # ---
@@ -144,16 +144,15 @@ sub yaml {
 # ---
 # ---   Paragraph
 # ---
-
 sub paragraph {
-    return _paragraph($_[0]->copy(), 1);
-}
+    my ($txt, $t) = @_;
 
-sub _paragraph {
-    my $txt = shift;
-    my $isroot = shift;
+    if (!$t) {
+        $t = Tree->new();
+        $txt = $txt->copy();
+    }
 
-    my $t = Tree->new();
+    my $level = $t->{level};
 
     while (@$txt) {
         $txt->skipempty();
@@ -161,73 +160,48 @@ sub _paragraph {
 
         my @f;
         # блоки, которые могут быть только в корне
-        if ($isroot && (@f = $s->match(qr/^ {0,3}\\(pagebreak)\s*$/))) {
+        if (!$level && (@f = $s->match(qr/^ {0,3}\\(pagebreak)\s*$/))) {
             $t->top();
             $t->add(
                 modifier =>
                 name    => $f[1]->{str}
             );
-            next;
         }
-        if ($isroot && (@f = $s->match(qr/^ {0,3}(\#+)\s+(.*)$/))) {
+        elsif (!$level && (@f = $s->match(qr/^ {0,3}(\#+)\s+(.*)$/))) {
             $t->top();
             $t->add(
                 header =>
                 deep    => length($f[1]->{str}),
                 content => [ $f[2] ]
             );
-            next;
         }
-
-        # Остальные блоки могут иметь подвложенность
-        my ($level, $s_) = $s->level($t->{level});
-        # если уровень вложенности в строке $s оказался выше, чем в дереве $t
-        # повышаем уровень в $t
-        $t->up() while $t->{level} > $level;
-        $s = $s_;
-
-        # проверяем, возможно это вложенный текстовый блок
-        my ($l1, $s1) = $s->level(1);
-        if ($l1 > 0) {
-            my $c = [$s1];
-            while (my ($s) = @$txt) {
-                last if $s->empty();
-                ($l1, $s1) = $s->level($t->{level} + 1);
-                last if $l1 <= $t->{level};
-                shift(@$txt);
-                push @$c, { $s1->hinf() };
-            }
-            $t->add(
-                textblock =>
-                text => $c
-            );
-        }
-        # т.к. мы первым делом проверили на более глубокую вложенность текста,
-        # то теперь мы уверены, что у нас перед данными не более трёх пробелов
-        # и больше нет пробельных символов, теперь мы можем вначале строки
-        # указывать \s+ вместо  {0,3}
 
         # список
-        elsif (@f = $s->match(qr/^\s*([\*\-]|\d+\.?)\s+(.*)$/)) {
-            if ($t->{last}->{type} ne 'list') {
-                $t->add(list => item => []);
-            }
-            my $list = $t->{last};
-            my $item = $t->down(
-                item =>
-                $f[1]->hinf('mode'),
+        elsif (@f = $s->match(qr/^ {0,3}([\*\-]|\d+\.)\s+(.*)$/)) {
+            $t->add(
+                listitem =>
+                $f[1]->{str} =~ /(\d+)/ ? (
+                    mode    => 'ord',
+                    num     => int($1)
+                ) : (
+                    mode    => $f[1]->{str}
+                ),
+                $f[1]->pos(),
                 title   => [$f[2]]
             );
-            push @{ $list->{item} }, $item;
+
+            if (my @sub = $txt->fetchlevel($level+1)) {
+                paragraph( Txt->new(@sub), $t->down() );
+            }
         }
 
         # горизонтальная линия
-        elsif ($s->match(qr/^\s*\-\-\-\s*$/)) {
+        elsif ($s->match(qr/^ {0,3}\-\-\-\s*$/)) {
             $t->add('hline');
         }
 
         # горизонтальная линия с текстом
-        elsif (@$txt && $txt->[0]->match(qr/^\s*\-\-\-\s*$/)) {
+        elsif (@$txt && $txt->[0]->match(qr/^ {,3}\-\-\-\s*$/)) {
             shift(@$txt);
             $t->add(
                 hline =>
@@ -236,7 +210,7 @@ sub _paragraph {
         }
 
         # badge
-        elsif (@f = $s->match(qr/^\s*\[([^\]]+)\]\s*\:\s*(\S+)\s+(.*\S)\s*$/)) {
+        elsif (@f = $s->match(qr/^ {0,3}\[([^\]]+)\]\s*\:\s*(\S+)\s+(.*\S)\s*$/)) {
             shift(@$txt);
             push @{ $t->root()->{badge} ||= [] }, {
                 code => $f[1]->{str},
@@ -249,7 +223,7 @@ sub _paragraph {
         elsif (
                 $s->match(qr/\|/) &&
                 @$txt &&
-                $txt->[0]->match(qr/^\s*\|?(\s*\:?\-+\:?\s*\|)+\s*\:?\-+\:?\s*\|?\s*$/)
+                $txt->[0]->match(qr/^ {,3}\|?(\s*\:?\-+\:?\s*\|)+\s*\:?\-+\:?\s*\|?\s*$/)
             ) {
             # разбиваем на колонки
             my $split = sub { shift()->cut(qr/^\s*\|/)->cut(qr/\|\s*$/)->split(qr/\|/, @_); };
@@ -289,7 +263,7 @@ sub _paragraph {
         }
 
         # таблица 2
-        elsif ($s->match(qr/^\s*(\-[\- ]{3,})$/)) {
+        elsif ($s->match(qr/^ {0,3}(\-[\- ]{3,})$/)) {
             my @width = $s->split(qw/\s+/);
             my $row = [ map { [] } @width ];
             my $rall= [ $row ];
@@ -302,11 +276,10 @@ sub _paragraph {
                     }
                     next;
                 }
-                if ($s->match(qr/^\s*\-[\- ]*$/)) {
+                if ($s->match(qr/^ {0,3}\-[\- ]*$/)) {
                     last;
                 }
 
-                $s = $s->delevel($level);
                 my @row = @$row;
                 foreach my $w (@width) {
                     my $r = shift @row;
@@ -325,11 +298,10 @@ sub _paragraph {
         }
 
         # code-блок
-        elsif (@f = $s->match(qr/^\s*\`\`\`(.*)$/)) {
+        elsif (@f = $s->match(qr/^ {0,3}\`\`\`(.*)$/)) {
             my $lang = $f[1]->{str};
             my $c = [];
             while (my $s = shift(@$txt)) {
-                $s = $s->delevel($level);
                 last if $s->match(qr/^ {0,3}\`\`\`/);
                 push @$c, { $s->hinf() };
             }
@@ -341,17 +313,26 @@ sub _paragraph {
         }
 
         # quote-блок
-        elsif (@f = $s->match(qr/^\s*\>\s{,4}(.*)$/)) {
+        elsif (@f = $s->match(qr/^ {0,3}\>\s{,4}(.*)$/)) {
             my @txt = ($f[1]);
-            while (@$txt && (@f = $txt->[0]->match(qr/^\s*\>\s{,4}(.*)$/))) {
+            while (@$txt && (@f = $txt->[0]->match(qr/^ {0,3}\>\s{,4}(.*)$/))) {
                 shift @$txt;
                 push @txt, $f[1];
             }
-            my $r = _paragraph( Txt->new(@txt) );
-            
+            $t->add('quote');
+            paragraph( Txt->new(@txt), $t->down() );
+        }
+        
+        # вложенный текстовый блок
+        elsif ($s->level() > 0) {
+            unshift @$txt, $s;
+            my @txt = $txt->fetchlevel($level+1);
+            pop(@txt) while @txt && $txt[@txt-1]->empty();
             $t->add(
-                qoute =>
-                text => $r->{content}
+                textblock =>
+                # чтобы txtstyle() потом не начал парсить содержимое
+                # этого текста, преобразуем его из Str в обычный хэш
+                text => [ map { { $_->hinf() } } @txt ]
             );
         }
 
@@ -369,7 +350,8 @@ sub _paragraph {
         }
     }
     
-    return $t->root();
+    $_[0] = $txt;
+    return $t->root()->{content};
 }
 
 
@@ -641,6 +623,24 @@ sub fetchln {
     return shift @$txt;
 }
 
+sub fetchlevel {
+    my ($txt, $level) = @_;
+
+    my $copy = $txt->copy();
+    $copy->skipempty();
+    return if !@$copy || ($copy->[0]->level() < $level);
+
+    my @r = ();
+    while (@$txt) {
+        my ($l, $s) = $txt->[0]->level($level);
+        last if ($l < $level) && !$s->empty();
+        shift @$txt;
+        push @r, $s;
+    }
+
+    return @r;
+}
+
 # ----------------------------------------------------------------------
 # ---
 # ---   Str
@@ -806,11 +806,6 @@ sub level {
     return $level;
 }
 
-sub delevel {
-    my ($s, $max) = @_;
-    return ($s->level($max))[1];
-}
-
 # ----------------------------------------------------------------------
 # ---
 # ---   Tree
@@ -822,17 +817,13 @@ sub new {
     my $class = shift;
 
     my $root = {
-        @_,
         type    => 'root',
         level   => 0,
         content => [],
+        @_
     };
 
-    my $self = bless {
-        tree    => [$root],
-        root    => $root,
-        level   => 0,
-    }, $class;
+    my $self = bless { tree => [$root] }, $class;
     $self->_upd($root);
 
     return $self;
@@ -846,6 +837,8 @@ sub add {
 
     $self->{last} = { @_, type => $type };
     push @{ $self->{node}->{content} }, $self->{last};
+
+    return $self->{last};
 }
 
 sub _upd {
@@ -866,11 +859,8 @@ sub _upd {
 
 sub up {
     my $self = shift;
-
     my $t = $self->{tree};
-
-    pop(@$t) while @$t > 1;
-
+    pop(@$t) if @$t > 1;
     return $self->_upd($t->[ @$t - 1 ]);
 }
 
@@ -883,18 +873,11 @@ sub top {
 
 sub down {
     my $self = shift;
-    my $type = shift;
 
-    my $node = {
-        type    => $type,
-        @_,
-        level   => $self->{level} + 1,
-        content => [],
-    };
-    push @{ $self->{tree} }, $node;
-    $self->_upd($node);
+    my $last = $self->{last} || return;
+    $last->{content} ||= [];
 
-    return $node;
+    return Tree->new( %$last );
 }
 
 1;
