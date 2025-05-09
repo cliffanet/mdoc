@@ -408,7 +408,7 @@ sub _txtstyle_str {
     my @str = shift;
 
     my @q = (
-        qr/\*\*(\S(.*\S)?)\*\*/,
+        qr/\*\*(\S(.*?\S)?)\*\*/,
         sub {
             return {
                 type    => 'bold',
@@ -416,7 +416,7 @@ sub _txtstyle_str {
             };
         },
 
-        qr/__(\S(.*\S)?)__/,
+        qr/__(\S(.*?\S)?)__/,
         sub {
             return {
                 type => 'bold',
@@ -424,7 +424,7 @@ sub _txtstyle_str {
             };
         },
 
-        qr/\*(\S(.*\S)?)\*/,
+        qr/\*(\S(.*?\S)?)\*/,
         sub {
             return {
                 type    => 'italic',
@@ -432,7 +432,7 @@ sub _txtstyle_str {
             };
         },
 
-        qr/_(\S(.*\S)?)_/,
+        qr/_(\S(.*?\S)?)_/,
         sub {
             return {
                 type    => 'italic',
@@ -750,7 +750,8 @@ sub match {
 
 sub word {
     my $self = shift;
-    my (undef, @s) = $self->match(qr/^\s*(\S+)(?:\s+(.+))?$/);
+    my (undef, @s) = $self->match(qr/^\s*(\S+)(?:\s+(.*))?$/);
+    pop(@s) if (@s > 1) && $s[@s-1]->empty();
     return wantarray ? @s : shift(@s);
 }
 

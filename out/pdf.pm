@@ -96,11 +96,14 @@ sub _page {
 }
 
 sub _parindent {
-    my ($self, $indent) = @_;
+    my ($self, $indent, $contr) = @_;
 
     my $ff = $self->{frame};
     if (!delete($self->{first})) {
         $ff->{h} -= $indent;
+    }
+    elsif ($contr) {
+        $ff->{h} += $contr;
     }
 }
 
@@ -119,33 +122,35 @@ sub header {
         {
             size    => 22,
             vindent => 12,
+            vcontr  => 10,
         }, {
             size    => 18,
             vindent => 10,
+            vcontr  => 7,
         }, {
             size    => 14,
             vindent => 8,
+            vcontr  => 5,
         }, {
             size    => 12,
             vindent => 8,
+            vcontr  => 5,
         }, {
             size    => 11,
             vindent => 8,
+            vcontr  => 5,
         },
     );
     my $p = ($p{deep} > 0) && ($p{deep} <= @level) ? $level[ $p{deep}-1 ] : $level[ @level-1 ];
 
-    $self->_parindent( $p->{vindent} );
-    my $font = $self->_font('Arial Bold.ttf');
-    my @ln = LineFull->bycont($font, $p->{size}, $self->{frame}->{w}, @{ $p{ content } });
+    my $style = SStyle->new($self, bold => 1, size => $p->{size});
+    my @ln = LineFull->bycont($style, $self->{frame}->{w}, @{ $p{ content } });
 
     my $h = $self->{size} + 6;
     $h += $_->{h} foreach @ln;
 
-    if ($self->{frame}->{h} < $h) {
-        $self->_page();
-        $self->_parindent( $p->{vindent} );
-    }
+    $self->_page() if $self->{frame}->{h} < $h;
+    $self->_parindent( $p->{vindent}, $p->{vcontr} );
 
     my $ff = $self->{frame};
     my $y = $ff->{y} + $ff->{h};
@@ -163,7 +168,7 @@ sub paragraph {
 
     my $ff = $self->{frame};
 
-    my @ln = LineFull->bycont($self->{font}, $self->{size}, $ff->{w}, @{ $p{ content } });
+    my @ln = LineFull->bycont(SStyle->new($self), $ff->{w}, @{ $p{ content } });
     my $y = $ff->{y} + $ff->{h};
     foreach my $ln (@ln) {
         if ($ff->{h} < $ln->{h}) {
@@ -207,78 +212,58 @@ sub paragraph {
     print Dumper $overflow, $height;
 =cut
 
-package WrdLine;
-
-# Строка из слов - с учётом шрифта, его размера и выделенной максимальной ширины строки,
-# позволяет максимально заполнить строку словами.
-#
-# 1. При создании указываем: параметры шрифта и выделенную ширину.
-# 2. Набиваем словами (метод add), пока не кончатся слова или не заполнится вся ширина.
-# 3. Получаем команды для вывода текста всей строки (метод cmd).
+package SStyle;
 
 sub new {
-    my ($class, $font, $size, $width) = @_;
+    my $class = shift;
+    my $out = shift;
 
-    my $self = {
-        w => $width,                        # выделенная максимальная ширина
-        h => 0,                             # высота всей строки (самого высокого элемента)
-        f => $font,                         # шрифт
-        sz => $size,                        # размер шрифта
-        spw => $font->width(' ') * $size,   # ширина пробела для данного шрифта
-        ww  => 0,                           # суммарная ширина всех слов без пробелов
-        lw  => 0,                           # суммарная шарина всех слов, включая стандартные пробелы между ними
-        wrd => []                           # список слов: [строка, ширина слова]
-    };
+    my $self = bless { out => $out, font => $out->{font}, size => $out->{size} }, $class;
+    $self->set(@_);
 
-    return bless($self, $class);
+    return $self;
 }
 
-sub add {
-    my ($self, $wrd) = @_;
+sub set {
+    my ($self, %p) = @_;
 
-    my $w = $self->{f}->width($wrd) * $self->{sz};
-    my $sw = @{ $self->{wrd} } * $self->{spw};
-    return if $self->{w} < $self->{ww} + $sw + $w;
-    
-    $self->{ww} += $w;
-    $self->{lw} = $self->{ww} + $sw;
-
-    my $h = $self->{sz} * 1.2;
-    $self->{h} = $h if $self->{h} < $h;
-
-    push @{ $self->{wrd} }, [$wrd, $w];
-
-    return 1;
-}
-
-sub empty { @{ shift()->{wrd} } == 0; }
-
-sub cmd {
-    my $self = shift;
-    my %p = @_;
-
-    if (my $ws = $p{ws}) { # указано принудительно расстояние между словами
-        # это значит надо использовать его, а не стандартное пробельное
-        my ($x, @cmd) = 0;
-        my @wrd = @{ $self->{wrd} };
-        while (my ($s, $ww) = @{ shift(@wrd)||[] }) {
-            push @cmd, [text => $s];
-            # в самом конце строки (целиковой в блоке) смещений не делаем,
-            # хотя на это можно забить, просто будет лишняя команда
-            # в конце текстового блока, которая ни на что не влияет
-            last if !@wrd && $p{lnend};
-            $x += $ww + $ws;
-            push @cmd, [position => $ww + $ws, 0];
+    if (my $f = $p{font}) {
+        $self->{font} = $self->{out}->_font($f);
+    }
+    elsif ($p{italic} || $p{bold}) {
+        $self->{bold} = 1 if $p{bold};
+        $self->{italic} = 1 if $p{italic};
+        if ($self->{bold} && $self->{italic}) {
+            $self->{font} = $self->{out}->_font('Arial Bold Italic.ttf');
         }
-
-        return $x, @cmd;
+        elsif ($self->{bold}) {
+            $self->{font} = $self->{out}->_font('Arial Bold.ttf');
+        }
+        elsif ($self->{italic}) {
+            $self->{font} = $self->{out}->_font('Arial Italic.ttf');
+        }
     }
 
-    my $spw = @{ $self->{wrd} };
-    $spw -- if $spw > 0;
-    $spw *= $self->{spw};
-    my $s = join(chr(0x20), map { $_->[0] } @{ $self->{wrd} });
-    return $spw + $self->{ww}, [text => $s];
+    $self->{size} = $p{size} if $p{size};
+}
+
+sub clone {
+    my $self = shift;
+    my $copy = bless { %$self }, ref($self);
+    $copy->set(@_);
+    return $copy;
+}
+
+sub width {
+    my $self = shift;
+    return $self->{font}->width(@_) * $self->{size};
+}
+
+sub height { return shift()->{size} * 1.2; }
+
+sub font {
+    my $self = shift;
+    return wantarray ? ($self->{font}, $self->{size}) : $self->{font};
 }
 
 package LineElem;
@@ -323,13 +308,12 @@ package LineStr;
 use base 'LineElem';
 
 sub new {
-    my ($class, $font, $size, $width) = @_;
+    my ($class, $style, $width) = @_;
     my $self = $class->SUPER::new();
-    $self->{font}   = $font;
-    $self->{size}   = $size;
+    $self->{style}  = $style;
     $self->{maxw}   = $width;
-    $self->{spw}    = $font->width(' ') * $size;    # ширина пробела для данного шрифта
-    $self->{wrd}    = [];                           # список слов: [строка, ширина слова]
+    $self->{spw}    = $style->width(' ');   # ширина пробела для данного шрифта
+    $self->{wrd}    = [];                   # список слов: [строка, ширина слова]
 
     return $self;
 }
@@ -339,15 +323,15 @@ sub empty { @{ shift()->{wrd} } == 0; }
 sub add {
     my ($self, $wrd) = @_;
 
-    my $ww = $self->{font}->width($wrd) * $self->{size};    # ширина добавляемого слова
-    my $sw = @{ $self->{wrd} } ? $self->{spw} : 0;          # нужно ли добавлять ширину пробела
-    my $fw = $self->{w} + $sw + $ww;                        # ширина строки с учётом добавляемого слова
+    my $ww = $self->{style}->width($wrd);               # ширина добавляемого слова
+    my $sw = @{ $self->{wrd} } ? $self->{spw} : 0;      # нужно ли добавлять ширину пробела
+    my $fw = $self->{w} + $sw + $ww;                    # ширина строки с учётом добавляемого слова
     return if $self->{maxw} < $fw;
     
     $self->{spcnt} = @{ $self->{wrd} };
     $self->{w} = $fw;
 
-    my $h = $self->{size} * 1.2;
+    my $h = $self->{style}->height();
     $self->{h} = $h if $self->{h} < $h;
 
     push @{ $self->{wrd} }, [$wrd, $ww];
@@ -358,7 +342,7 @@ sub add {
 sub run {
     my ($self, $txt, $x, $y) = @_;
 
-    $txt->font($self->{font}, $self->{size});
+    $txt->font($self->{style}->font());
 
     if (my $sw = $self->{ws}) { # указано дополнительное расстояние между словами
         # это расстояние нужно добавить к существующему пробельному расстоянию
@@ -367,18 +351,16 @@ sub run {
         # суммарная ширина всей строки, которую мы вернём
         # стартуем её значение с полной ширины всех пробелов между словами
         my $w = @wrd ? (@wrd - 1) * $sw : 0;
+        my $dx = 0;
         while (my ($s, $ww) = @{ shift(@wrd)||[] }) {
             $txt->text($s);
             $w += $ww;
-            # в самом конце строки (целиковой в блоке) смещений не делаем,
-            # хотя на это можно забить, просто будет лишняя команда
-            # в конце текстового блока, которая ни на что не влияет
-            last if !@wrd && $self->{lnend};    # признак, что это крайний элемент в строке,
-                                                # его выставляет вышестоящая полная строка
-            $txt->position($ww + (@wrd ? $sw : 0), 0);
+            @wrd || last;
+            $txt->position($ww + $sw, 0);
+            $dx += $ww + $sw;
         }
 
-        return $w;
+        return $w, $dx;
     }
 
     my $s = join(chr(0x20), map { $_->[0] } @{ $self->{wrd} });
@@ -394,16 +376,16 @@ sub new {
 }
 
 sub line {
-    my ($class, $font, $size, $width, @c) = @_;
+    my ($class, $style, $width, @c) = @_;
     
-    my $sw = $font->width(' ') * $size;
+    my $sw = $style->width(' ');
     my ($w, @e) = 0;
 
     while (my $c = shift @c) {
+        my $w1 = $w + (@e ? $sw : 0);
         my $last;
         if (ref($c) eq 'Str') {
-            my $w1 = $w + (@e ? $sw : 0);
-            my $e = LineStr->new($font, $size, $width - $w1);
+            my $e = LineStr->new($style, $width - $w1);
             while (my ($wrd, $n) = $c->word()) {
                 if ($e->add($wrd->{str})) {
                     $c = $n || last;
@@ -418,6 +400,23 @@ sub line {
             if (!$e->empty()) {
                 push @e, $e;
                 $w = $w1 + $e->{w};
+            }
+        }
+        elsif (($c->{type} eq 'bold') || ($c->{type} eq 'italic')) {
+            my $s1 = $style->clone($c->{type} => 1);
+            my ($ln, @c1) = $class->line($s1, $width - $w1, @{ $c->{text} });
+
+            if ($ln->empty()) {
+                unshift(@c, $c);
+                $last = 1;
+                last;
+            }
+            else {
+                push @e, @{ $ln->{elem} };
+                $w = $w1 + $ln->{w};
+                if (@c1) {
+                    unshift(@c, { %$c, text => [@c1] });
+                }
             }
         }
         last if $last;
@@ -439,20 +438,18 @@ sub line {
         }
     }
 
-    $e[@e-1]->{lnend} = 1 if @e;
-
     my $self = bless { w => $w, h => $h, sw => $sw, elem => [@e] }, shift();
     return $self, @c;
 }
 
 sub bycont {
-    my ($class, $font, $size, $width, @c) = @_;
+    my ($class, $style, $width, @c) = @_;
 
     my @all = ();
 
     while (@c) {
         my $ln;
-        ($ln, @c) = $class->line($font, $size, $width, @c);
+        ($ln, @c) = $class->line($style, $width, @c);
         last if !$ln || $ln->empty();
         push @all, $ln;
     }
@@ -512,10 +509,25 @@ sub run {
     $txt->position($x, $y);
 
     while (my $e = shift @e) {
-        my $w1 = $e->run($txt, $x, $y);
-        $w1 += $self->{sw} if @e;
+        # elem-run возвращает два размера:
+        #   - собственную ширину
+        #   - на сколько реально был смещён текстовый курсор
+        # эти значения могут отличаться, т.к. после крайнего
+        # вывода текста (это может быть вся строка, а может
+        # только крайнее слово) перемещение корсора не выполняется,
+        # чтобы не добавлять лишних команд там, где это не надо
+        my ($w1, $dx) = $e->run($txt, $x, $y);
         $x += $w1;
         $w += $w1;
+        if (@e) {
+            # Поэтому, если нам надо добавить пробел после предыдущего
+            # elem перед следущим, надо учесть, что текстовый курсор
+            # совсем необязательно находится после выведенного текста
+            $dx = $w1-($dx||0); # $dx может отсутствовать на выходе elem-run
+            $dx = 0 if $dx < 0;
+            $dx += $self->{sw};
+            $txt->position($dx, 0);
+        }
     }
 
     return $w;
