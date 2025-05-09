@@ -25,6 +25,16 @@ my $cont    = paragraph($txt) || err();
 use Data::Dumper;
 print Dumper $yaml, $cont;#, $txt, $p;
 
+foreach my $k (qw/geometry/) {
+    my $v = $yaml->{$k} || next;
+    my @v = split /\s+/, $v;
+    $v = ($yaml->{$k} = {});
+    foreach (@v) {
+        my ($k1, $v1) = split /\=/, $_, 2;
+        $v->{$k1} = $v1;
+    }
+}
+
 my $out = 'out::' . $p->{type};
 $out = $out->new(%$yaml);
 $out->make(@$cont);
@@ -368,7 +378,7 @@ sub paragraph {
             }
             $t->add(
                 paragraph =>
-                text => $c
+                content => $c
             );
         }
     }
@@ -720,6 +730,7 @@ sub match {
     my $c = length ${^PREMATCH};
 
     foreach my $r (@r) {
+        defined($r) || next;
         my $i = index($m, $r);
         if ($i > 0) {
             $c += $i;
@@ -732,7 +743,15 @@ sub match {
             );
     }
 
+    pop(@r) while @r && !defined($r[@r-1]);
+
     return @r;
+}
+
+sub word {
+    my $self = shift;
+    my (undef, @s) = $self->match(qr/^\s*(\S+)(?:\s+(.+))?$/);
+    return wantarray ? @s : shift(@s);
 }
 
 sub split {
