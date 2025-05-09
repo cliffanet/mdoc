@@ -11,24 +11,6 @@ use constant mm2pix => 2.8346904;
 
 PDF::API2->add_to_font_path('.', './fonts', '/System/Library/Fonts', '/System/Library/Fonts/Supplemental', '/Library/Fonts', '~/Library/Fonts');
 
-my %style = (
-    base => {
-        #font => 'Arial.ttf',
-        font => 'helvetica_regular.otf',
-        #font => 'Helvetica',    # с ttf-шрифтами не работает wordspace, который нужен для justify
-                                # но core-шрифты не работают с кодировками совсем
-        size => 11,
-    },
-
-    bold => {
-        font => 'Times-Bold',
-    },
-
-    italic => {
-        font => 'Times-Italic',
-    }
-);
-
 sub new {
     my $self = shift()->SUPER::new(@_);
 
@@ -67,7 +49,8 @@ sub new {
         bottom  => $geom->('bottom',    '2.5cm'),
     };
 
-    $self->_style('base');
+    $self->{font} = $self->_font('Arial.ttf');
+    $self->{size} = 11;
     
     $self->_page();
 
@@ -129,168 +112,6 @@ sub _font {
     return $fall->{ $name } ||= $self->{pdf}->font($name);
 }
 
-sub _style {
-    my $self = shift;
-    if (@_ == 1) {
-        my $ss = $style{ shift() } || {};
-        return $self->_style(%$ss);
-    }
-    if (@_) {
-        my $ss = { @_ };
-        if (my $fname = delete $ss->{font}) {
-            my $fall = ($self->{fontall} ||= {});
-            $ss->{font} = ( $fall->{ $fname } ||= $self->{pdf}->font($fname) );
-        }
-        push @{ $self->{style}||=[] }, $ss;
-    }
-
-    return { map { %$_ } @{ $self->{style}||[] } };
-}
-sub _styleend {
-    my $self = shift;
-    return pop @{ $self->{style}||[] };
-}
-
-sub _line_get {
-    my ($self, $width, @c) = @_;
-    $width ||= 0;
-
-    my ($h, $ww, $spcnt, @cmd) = (0, 0, 0);
-    my $ss = $self->_style();
-    my $sw = $ss->{font}->width(' ') * $ss->{size};
-
-    while (my $c = shift @c) {
-        my $last;
-        if (ref($c) eq 'Str') {
-            my $l = PdfLine->new($ss->{font}, $ss->{size}, $width);
-            while (my ($wrd, $n) = $c->word()) {
-                if ($l->add($wrd->{str})) {
-                    $c = $n || last;
-                    next;
-                }
-                
-                unshift(@c, $c);
-                $last = 1;
-                last;
-            }
-            
-            if (!$l->empty()) {
-                $h = $l->{h} if $h < $l->{h};
-                $ww += $l->{ww};
-                $width -= $l->{lw};
-                $spcnt ++ if @cmd;
-                $spcnt += @{ $l->{wrd} } - 1;
-                push @cmd, sub { $l->cmd(@_); };
-            }
-        }
-        last if $last;
-    }
-
-    return
-        h       => $h,          # высота строки
-        ww      => $ww,         # суммарная ширина всех неразрывных элементов
-        spcnt   => $spcnt,      # количество пробельных элементов
-        nxt     => [@c],        # остаток от content
-        cmd     => [@cmd];      # функции по генерации команд
-}
-
-sub _line {
-    my ($self, $width, @c) = @_;
-    $width ||= 0;
-
-    # Для каждой строки будем создавать отдельный text-объект,
-    # так делают очень многие конверторы в pdf.
-    #
-    # Дело в том, что для манипулиции с координатами у нас
-    # в основном только Td. Только первый вызов Td внутри
-    # текстового блока задаёт абсолютные координаты, все
-    # последующие - относительно предыдущего места установки
-    # с помощью того же Td.
-    #
-    # Для строк, которые не надо растягивать на всю ширину это
-    # работает нормально - напечатал строку, перевёл через Td
-    # на следующую. Но это только крайняя строка в абзаце,
-    # по завершении которого мы всё равно закроем блок.
-    #
-    # Но если строчку надо растянуть, это можно нормально сделать
-    # только делая Td после каждого слова (Tw не работает для
-    # юникода). Получаем, что напечатав крайнее слово в строке,
-    # нам надо не только спуститься вниз, но и откатиться
-    # влево на ширину текста до этого слова. Аналогично и с
-    # составными строками (когда внутри встречаются разные стили).
-    #
-    # Td = position
-    # Tw = wordspace
-    #
-    # Поэтому проще всего создавать для каждой строки свой
-    # текстовый блок, чтобы корректно задавать абсолютные
-    # координаты начала.
-    #
-    # Например, экспорт в отечественном office-word в pdf
-    # задаёт для каждого слова свои координаты. Чтобы не пересоздавать
-    # текстовый блок, там перед словом указываются координаты
-    # через команду cm (Modify the current transformation matrix),
-    # и в ней надо задавать аж 6 чисел, только двое из которых -
-    # это координаты.
-    #
-    # Возможно, имеет смысл тоже делать cm, но для каждой строчки,
-    # а текстовый блок выделять на весь абзац. Но пока непонятно,
-    # стоит ли заморачиваться с этим усложнением, т.к. придётся
-    # всё равно переоткрывать блок, если абзац не вместится
-    # на странице и будет перенесён на следующую.
-
-    my $ss = $self->_style();
-    my $fsize = $ss->{size};
-    my @cmd = (
-        # сюда в качестве $x, $y передаётся левый верхний угол текста,
-        # отступ вниз на высоту шрифта мы делаем сами
-        sub {
-            my ($text, $x, $y) = @_;
-            $text->position($x, $y - $fsize);
-        },
-        [font => $ss->{font}, $ss->{size}]
-    );
-
-    # на входе - элементы content
-    my %p = $self->_line_get($width, @c);
-    @{ $p{cmd} || [] } || return h => $p{h}, nxt => $p{nxt};
-    
-    my @arg = ();
-    if (@{$p{nxt}} && ($width > $p{ww}) && $p{spcnt}) {
-        # есть продолжение, в $p{nxt}, значит эту строчку надо растянуть
-        @arg = (ws => ($width - $p{ww}) / $p{spcnt});
-    }
-
-    my $xp = 0;
-    my @cmdr = @{ $p{cmd} };
-    while (my $c = shift(@cmdr)) {
-        @cmdr || push(@arg, lnend => 1);
-        my ($w, @c) = $c->(x => $xp, @arg);
-        $xp += $w;
-        push @cmd, @c;
-    }
-
-    return
-        h   => $p{h},
-        cmd => [@cmd],
-        nxt => $p{nxt};
-}
-
-sub _text_out {
-    my ($self, $x, $y, @cmd) = @_;
-
-    my $txt = $self->{page}->text();
-    foreach my $cmd (@cmd) {
-        if (ref($cmd) eq 'CODE') {
-            $cmd->($txt, $x, $y);
-        }
-        elsif (ref($cmd) eq 'ARRAY') {
-            my ($m, @arg) = @$cmd;
-            $txt->$m(@arg);
-        }
-    }
-}
-
 sub header {
     my ($self, %p) = @_;
 
@@ -314,20 +135,12 @@ sub header {
     );
     my $p = ($p{deep} > 0) && ($p{deep} <= @level) ? $level[ $p{deep}-1 ] : $level[ @level-1 ];
 
-    my $txtsz = $self->_style()->{size};
-    my $width = $self->{frame}->{w};
     $self->_parindent( $p->{vindent} );
-    $self->_style(font => 'Arial Bold.ttf', size => $p->{size});
+    my $font = $self->_font('Arial Bold.ttf');
+    my @ln = LineFull->bycont($font, $p->{size}, $self->{frame}->{w}, @{ $p{ content } });
 
-    my @c = @{ $p{content} };
-    my ($h, @cmd) = $txtsz + 6;
-    while (@c) {
-        my %p = $self->_line($width, @c);
-        @{ $p{cmd}||[] } || last;
-        push @cmd, [$p{h}, $p{cmd}];
-        $h += $p{h};
-        @c = @{ $p{nxt}||[] };
-    }
+    my $h = $self->{size} + 6;
+    $h += $_->{h} foreach @ln;
 
     if ($self->{frame}->{h} < $h) {
         $self->_page();
@@ -336,14 +149,11 @@ sub header {
 
     my $ff = $self->{frame};
     my $y = $ff->{y} + $ff->{h};
-    foreach (@cmd) {
-        my ($h, $cmd) = @$_;
-        $self->_text_out($ff->{x}, $y, @$cmd);
-        $y -= $h;
-        $ff->{h} -= $h;
+    foreach my $ln (@ln) {
+        $y          -= $ln->{h};
+        my $w = $ln->run($self->{page}, $ff->{x}, $y);
+        $ff->{h}    -= $ln->{h};
     }
-
-    $self->_styleend();
 }
 
 sub paragraph {
@@ -352,24 +162,20 @@ sub paragraph {
     $self->_parindent(6);
 
     my $ff = $self->{frame};
+
+    my @ln = LineFull->bycont($self->{font}, $self->{size}, $ff->{w}, @{ $p{ content } });
     my $y = $ff->{y} + $ff->{h};
-
-    my @c = @{ $p{content} };
-    while (@c) {
-        my %p = $self->_line($ff->{w}, @c);
-        @{ $p{cmd}||[] } || last;
-
-        if ($ff->{h} < $p{h}) {
+    foreach my $ln (@ln) {
+        if ($ff->{h} < $ln->{h}) {
             $self->_page();
             $self->_parindent(6);
             $ff = $self->{frame};
             $y = $ff->{y} + $ff->{h};
         }
 
-        $self->_text_out($ff->{x}, $y, @{ $p{cmd} });
-        $y -= $p{h};
-        $ff->{h} -= $p{h};
-        @c = @{ $p{nxt}||[] };
+        $y          -= $ln->{h};
+        my $w = $ln->run($self->{page}, $ff->{x}, $y);
+        $ff->{h}    -= $ln->{h};
     }
 }
 
@@ -401,7 +207,14 @@ sub paragraph {
     print Dumper $overflow, $height;
 =cut
 
-package PdfLine;
+package WrdLine;
+
+# Строка из слов - с учётом шрифта, его размера и выделенной максимальной ширины строки,
+# позволяет максимально заполнить строку словами.
+#
+# 1. При создании указываем: параметры шрифта и выделенную ширину.
+# 2. Набиваем словами (метод add), пока не кончатся слова или не заполнится вся ширина.
+# 3. Получаем команды для вывода текста всей строки (метод cmd).
 
 sub new {
     my ($class, $font, $size, $width) = @_;
@@ -466,6 +279,246 @@ sub cmd {
     $spw *= $self->{spw};
     my $s = join(chr(0x20), map { $_->[0] } @{ $self->{wrd} });
     return $spw + $self->{ww}, [text => $s];
+}
+
+package LineElem;
+
+# Горизонтальный элемент контента.
+# Его роль в том, чтобы смочь вывести себя в двух вариантах:
+#   - обычный
+#   - растянутый на всю ширину
+# В каждой строке таких элементов может быть несколько, и чтобы
+# корректно они могли растягиваться, каждый элемент в себе хранит
+# свою обычную ширину и количество пробелов. Так же пробелами
+# считаются места между такими элементами.
+#
+# Таким образом, вся строка может быть сформирована, опираяся
+# на суммаршую ширину всех элементов и ширину пробелов между
+# ними. А если надо будет строку растянуть, всем её элементам
+# будет передан параметр ws - который сообщит о дополнительном
+# расстоянии между элементами.
+
+sub new {
+    my $class = shift();
+
+    my $self = bless(
+        {
+            # стандартные поля, на которые будет опираться
+            # целиковая строка на стадии принятия решения,
+            # надо ли растягивать или оставить, как есть.
+            w => 0,     # стандартная ширина всего элемента
+            h => 0,     # высота элемента
+            spcnt => 0, # количество пробелов, которые можно будет нарастить для растягивания всей строки
+            ws => 0,    # дополнительное наращивание ширины пробела, если всю строчку нужно растянуть
+        },
+        $class
+    );
+}
+
+package LineStr;
+# Простой текстовый элемент строки.
+# Принцип формирования:
+# 1. При создании указываем: параметры шрифта и максимально возможную ширину.
+# 2. Набиваем словами (метод add), пока не кончатся слова или не заполнится вся выделенная ширина.
+use base 'LineElem';
+
+sub new {
+    my ($class, $font, $size, $width) = @_;
+    my $self = $class->SUPER::new();
+    $self->{font}   = $font;
+    $self->{size}   = $size;
+    $self->{maxw}   = $width;
+    $self->{spw}    = $font->width(' ') * $size;    # ширина пробела для данного шрифта
+    $self->{wrd}    = [];                           # список слов: [строка, ширина слова]
+
+    return $self;
+}
+
+sub empty { @{ shift()->{wrd} } == 0; }
+
+sub add {
+    my ($self, $wrd) = @_;
+
+    my $ww = $self->{font}->width($wrd) * $self->{size};    # ширина добавляемого слова
+    my $sw = @{ $self->{wrd} } ? $self->{spw} : 0;          # нужно ли добавлять ширину пробела
+    my $fw = $self->{w} + $sw + $ww;                        # ширина строки с учётом добавляемого слова
+    return if $self->{maxw} < $fw;
+    
+    $self->{spcnt} = @{ $self->{wrd} };
+    $self->{w} = $fw;
+
+    my $h = $self->{size} * 1.2;
+    $self->{h} = $h if $self->{h} < $h;
+
+    push @{ $self->{wrd} }, [$wrd, $ww];
+
+    return 1;
+}
+
+sub run {
+    my ($self, $txt, $x, $y) = @_;
+
+    $txt->font($self->{font}, $self->{size});
+
+    if (my $sw = $self->{ws}) { # указано дополнительное расстояние между словами
+        # это расстояние нужно добавить к существующему пробельному расстоянию
+        $sw += $self->{spw};            # итоговая ширина пробела между словами
+        my @wrd = @{ $self->{wrd} };
+        # суммарная ширина всей строки, которую мы вернём
+        # стартуем её значение с полной ширины всех пробелов между словами
+        my $w = @wrd ? (@wrd - 1) * $sw : 0;
+        while (my ($s, $ww) = @{ shift(@wrd)||[] }) {
+            $txt->text($s);
+            $w += $ww;
+            # в самом конце строки (целиковой в блоке) смещений не делаем,
+            # хотя на это можно забить, просто будет лишняя команда
+            # в конце текстового блока, которая ни на что не влияет
+            last if !@wrd && $self->{lnend};    # признак, что это крайний элемент в строке,
+                                                # его выставляет вышестоящая полная строка
+            $txt->position($ww + (@wrd ? $sw : 0), 0);
+        }
+
+        return $w;
+    }
+
+    my $s = join(chr(0x20), map { $_->[0] } @{ $self->{wrd} });
+    $txt->text($s);
+
+    return $self->{w};
+}
+
+package LineFull;
+
+sub new {
+    return bless { w => 0, h => 0, elem => [] }, shift();
+}
+
+sub line {
+    my ($class, $font, $size, $width, @c) = @_;
+    
+    my $sw = $font->width(' ') * $size;
+    my ($w, @e) = 0;
+
+    while (my $c = shift @c) {
+        my $last;
+        if (ref($c) eq 'Str') {
+            my $w1 = $w + (@e ? $sw : 0);
+            my $e = LineStr->new($font, $size, $width - $w1);
+            while (my ($wrd, $n) = $c->word()) {
+                if ($e->add($wrd->{str})) {
+                    $c = $n || last;
+                    next;
+                }
+                
+                unshift(@c, $c);
+                $last = 1;
+                last;
+            }
+            
+            if (!$e->empty()) {
+                push @e, $e;
+                $w = $w1 + $e->{w};
+            }
+        }
+        last if $last;
+    }
+
+    my $h = 0;
+    foreach my $e (@e) {
+        $h = $e->{h} if $h < $e->{h};
+    }
+
+    if (@c && @e && ($width > $w)) {
+        # есть ещё контент, поэтому эту строчку надо растянуть
+        my $spc = @e-1;
+        $spc += $_->{spcnt} foreach @e;
+        if ($spc) {
+            my $ws = ($width - $w) / $spc;
+            $_->{ws} = $ws foreach @e;
+            $sw += $ws;
+        }
+    }
+
+    $e[@e-1]->{lnend} = 1 if @e;
+
+    my $self = bless { w => $w, h => $h, sw => $sw, elem => [@e] }, shift();
+    return $self, @c;
+}
+
+sub bycont {
+    my ($class, $font, $size, $width, @c) = @_;
+
+    my @all = ();
+
+    while (@c) {
+        my $ln;
+        ($ln, @c) = $class->line($font, $size, $width, @c);
+        last if !$ln || $ln->empty();
+        push @all, $ln;
+    }
+
+    return @all;
+}
+
+sub empty { @{ shift()->{elem} } == 0 }
+
+sub run {
+    my ($self, $page, $x, $y) = @_;
+
+    # Для каждой строки будем создавать отдельный text-объект,
+    # так делают очень многие конверторы в pdf.
+    #
+    # Дело в том, что для манипулиции с координатами у нас
+    # в основном только Td. Только первый вызов Td внутри
+    # текстового блока задаёт абсолютные координаты, все
+    # последующие - относительно предыдущего места установки
+    # с помощью того же Td.
+    #
+    # Для строк, которые не надо растягивать на всю ширину это
+    # работает нормально - напечатал строку, перевёл через Td
+    # на следующую. Но это только крайняя строка в абзаце,
+    # по завершении которого мы всё равно закроем блок.
+    #
+    # Но если строчку надо растянуть, это можно нормально сделать
+    # только делая Td после каждого слова (Tw не работает для
+    # юникода). Получаем, что напечатав крайнее слово в строке,
+    # нам надо не только спуститься вниз, но и откатиться
+    # влево на ширину текста до этого слова. Аналогично и с
+    # составными строками (когда внутри встречаются разные стили).
+    #
+    # Td = position
+    # Tw = wordspace
+    #
+    # Поэтому проще всего создавать для каждой строки свой
+    # текстовый блок, чтобы корректно задавать абсолютные
+    # координаты начала.
+    #
+    # Например, экспорт в отечественном office-word в pdf
+    # задаёт для каждого слова свои координаты. Чтобы не пересоздавать
+    # текстовый блок, там перед словом указываются координаты
+    # через команду cm (Modify the current transformation matrix),
+    # и в ней надо задавать аж 6 чисел, только двое из которых -
+    # это координаты.
+    #
+    # Возможно, имеет смысл тоже делать cm, но для каждой строчки,
+    # а текстовый блок выделять на весь абзац. Но пока непонятно,
+    # стоит ли заморачиваться с этим усложнением, т.к. придётся
+    # всё равно переоткрывать блок, если абзац не вместится
+    # на странице и будет перенесён на следующую.
+
+    my $w = 0;
+    my @e = @{ $self->{elem} };
+    my $txt = $page->text();
+    $txt->position($x, $y);
+
+    while (my $e = shift @e) {
+        my $w1 = $e->run($txt, $x, $y);
+        $w1 += $self->{sw} if @e;
+        $x += $w1;
+        $w += $w1;
+    }
+
+    return $w;
 }
 
 1;
