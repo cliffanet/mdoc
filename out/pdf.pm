@@ -333,6 +333,11 @@ sub font {
     return wantarray ? ($self->{font}, $self->{size}) : $self->{font};
 }
 
+sub ulpos {
+    my $self = shift;
+    return $self->{font}->underlineposition() * $self->{size} / 1000 || 1;
+}
+
 package LineElem;
 
 # Горизонтальный элемент контента.
@@ -457,6 +462,42 @@ sub run {
     }
 }
 
+package LineICode;
+# inlinecode
+use base 'LineStr';
+
+sub new {
+    my $self = shift()->SUPER::new(@_);
+    $self->{w} += int($self->{style}->{size} / 2) * 2;
+    return $self;
+}
+
+sub run {
+    my ($self, $p) = @_;
+
+    $p->gfxcol('#aaa');
+    my $yz = $self->{style}->{size} * 0.2;
+    $p->rrect($p->{x} + 1, $p->{y} + $self->{style}->ulpos() - $yz, $self->{w} - 2 + $self->{spcnt}*$self->{ws}, $self->{style}->{size} + $yz*2, 4);
+
+    my $lw = int($self->{style}->{size} / 2); 
+    $p->dx( $lw );
+
+    {
+        # При растягивании текста LineStr::run делает внутри себя dx
+        # ровно на ширину текста, т.к. считает её вручную.
+        # Однако, без растягивания, LineStr::run выводит всю строчку
+        # и делает dx на $self->{w}, считая, что там только ширина текста,
+        # а в LineICode это не так, там ещё дополнительная ширина $lw*2,
+        # которую тут надо временно вычесть. В дальнейшем, наверное,
+        # надо сделать, чтобы в LineStr::run пересчитывалась вручную
+        # и в случае без растягивания текста так же.
+        local $self->{w} = $self->{w} - $lw*2;
+        $self->SUPER::run($p);
+    } 
+    $p->dx( $lw );
+}
+
+
 package LineFull;
 
 sub new {
@@ -505,6 +546,25 @@ sub line {
                 if (@c1) {
                     unshift(@c, { %$c, text => [@c1] });
                 }
+            }
+        }
+        elsif ($c->{type} eq 'inlinecode') {
+            my $s = Str->new($c->{str}, row => $c->{row}, col => $c->{col});
+            my $e = LineICode->new($style, $width - $w1);
+            while (my ($wrd, $n) = $s->word()) {
+                if ($e->add($wrd->{str})) {
+                    $s = $n || last;
+                    next;
+                }
+                
+                unshift(@c, { $s->hinf(), type => 'inlinecode' });
+                $last = 1;
+                last;
+            }
+            
+            if (!$e->empty()) {
+                push @e, $e;
+                $w = $w1 + $e->{w};
             }
         }
         last if $last;
@@ -565,9 +625,10 @@ sub new {
 }
 
 sub run {
-    my $self = shift;
+    my ($self, $p) = @_;
 
-    delete $self->{text};
+    delete $p->{text};
+    $p->gfxclear();
 }
 
 package Page;
@@ -646,13 +707,10 @@ sub run {
     my ($x1,$y1, $x2,$y2) = ($x+$self->{margin}->{left}, $y+$self->{margin}->{bottom}, $x+$w-$self->{margin}->{right}, $self->{y});
     $g->move($x1,$y1);
     $g->hline($x2);
-    $g->move($x1,$y1);
     $g->vline($y2);
-    $g->move($x2,$y2);
     $g->hline($x1);
-    $g->move($x2,$y2);
     $g->vline($y1);
-    $g->paint();
+    $g->stroke();
 
     foreach my $ln (@{ $self->{line} }) {
         $self->{x}  = $x + $self->{margin}->{left};
@@ -665,6 +723,7 @@ sub run {
 
     delete $self->{page};
     delete $self->{text};
+    $self->gfxclear();
     delete $self->{x};
     delete $self->{y};
 }
@@ -734,6 +793,70 @@ sub text {
     # следующего абзаца создавать новый.
 
     $t->{o}->text(@_);
+}
+
+sub gfx {
+    my $self = shift();
+
+    if (!$self->{gfx}) {
+        # Если на странице мы используем и графику и текст, то нам важно,
+        # чтобы content с графикой был по текущим text-content,
+        # если таковой уже открыт, иначе графика закроет текст.
+        my $tc;
+        if ($self->{text}) {
+            # Нормального способа, как в PDF::API2::Page сменить местами
+            # два верхних потока я не нашёл, поэтому немного взламываем код,
+            # из-за чего он может перестать работать, если в PDF::API2::Page
+            # что-то сильно поменяют, т.к. это внутренняя кухня.
+            $tc = pop @{ $self->{page}->{'Contents'}->val() };
+        }
+        my $g = $self->{page}->graphics();
+        push(@{ $self->{page}->{'Contents'}->val() }, $tc) if $tc;
+        $self->{gfx} = {
+            c => '#000',
+            o => $g,
+        };
+    }
+
+    return $self->{gfx}->{o};
+}
+
+sub rrect {
+    my ($self, $x, $y, $w, $h, $r) = @_;
+
+    my $g = $self->gfx();
+    $g->move($x, $y+$r);
+    $g->arc($x + $r,        $y + $r,        $r, $r, -180, -90);
+    $g->hline($x + $w - $r);
+    $g->arc($x + $w - $r,   $y + $r,        $r, $r, -90, 0);
+    $g->vline($y + $h - $r);
+    $g->arc($x + $w - $r,   $y + $h - $r,   $r, $r, 0, 90);
+    $g->hline($x + $r);
+    $g->arc($x + $r,        $y + $h - $r,   $r, $r, 90, 180);
+    $g->vline($y + $r);
+    $g->paint();
+}
+
+sub gfxcol {
+    my ($self, $col) = @_;
+
+    my $g = $self->gfx();
+    return if $self->{gfx}->{c} eq $col;
+    $self->{gfx}->{c} = $col;
+    $g->stroke_color($col);
+    $g->fill_color($col);
+}
+
+sub gfxclear {
+    my $self = shift();
+
+    # Почему-то в PDF изменение fill_color (а может и stroke_color) действует
+    # не до конца content-stream, а до конца страницы. Поэтому надо сменить
+    # цвет на стандартный в конце gfx-content
+    $self->{gfx} || return;
+    my $c = $self->{gfx}->{c};
+    $self->gfxcol('#000') if $c;
+    delete $self->{gfx};
 }
 
 1;
