@@ -372,6 +372,8 @@ sub new {
     );
 }
 
+sub run {}
+
 package LineStr;
 # Простой текстовый элемент строки.
 # Принцип формирования:
@@ -405,6 +407,10 @@ sub add {
 
     my $h = $self->{style}->height();
     $self->{h} = $h if $self->{h} < $h;
+
+    if (!@{ $self->{wrd} } && ($wrd =~ /^[\,\.\:]/)) {
+        $self->{nospl} = 1;
+    }
 
     push @{ $self->{wrd} }, [$wrd, $ww];
 
@@ -497,11 +503,43 @@ sub run {
     $p->dx( $lw );
 }
 
+package LineHref;
+# href
+use base 'LineElem';
+
+sub new {
+    my ($class, $w, $h, $spcnt, $url) = @_;
+    my $self = $class->SUPER::new();
+    $self->{url} = $url;
+    $self->{rect} = {
+        w       => $w,
+        h       => $h,
+        spcnt   => $spcnt
+    };
+
+    return $self;
+}
+
+sub run {
+    my ($self, $p) = @_;
+
+    my $r = $self->{rect};
+    my $g = $p->gfx();
+    $p->gfxcol('#000');
+    $g->move($p->{x}, $p->{y} - 3);
+    $g->hline($p->{x} + $r->{w} + $r->{spcnt}*$self->{ws});
+    $g->stroke();
+
+    my $an = $p->annotation();
+    $an->rect($p->{x}, $p->{y} - 3, $p->{x} + $r->{w} + $r->{spcnt}*$self->{ws}, $p->{y} - 3 + $r->{h});
+    $an->uri($self->{url});
+}
+
 
 package LineFull;
 
 sub new {
-    return bless { w => 0, h => 0, elem => [] }, shift();
+    return bless { w => 0, h => 0, spcnt => 0, elem => [] }, shift();
 }
 
 sub line {
@@ -513,6 +551,7 @@ sub line {
     while (my $c = shift @c) {
         my $w1 = $w + (@e ? $sw : 0);
         my $last;
+
         if (ref($c) eq 'Str') {
             my $e = LineStr->new($style, $width - $w1);
             while (my ($wrd, $n) = $c->word()) {
@@ -567,6 +606,34 @@ sub line {
                 $w = $w1 + $e->{w};
             }
         }
+        elsif ($c->{type} eq 'href') {
+            my ($ln, @c1) = $class->line($style, $width - $w1, @{ $c->{text} });
+
+            if ($ln->empty()) {
+                unshift(@c, $c);
+                $last = 1;
+                last;
+            }
+            else {
+                my $href = LineHref->new($ln->{w}, $ln->{h}, $ln->{spcnt}, $c->{url});
+                # $href должен быть перед текстовыми элементами, чтобы были
+                # корректными x и y.
+                # И т.к. $href является отдельным элементом, надо доработать
+                # межэлементные интервалы: у $href nospl должен соответствовать
+                # первому элементу в $ln->{elem}, а для первого элемента
+                # nospl должен быть обязательно установлен, чтобы не было
+                # промежутков между $href и $ln->{elem}.
+                my $e0 = $ln->{elem}->[0];
+                $href->{nospl} = 1 if $e0->{nospl};
+                $e0->{nospl} = 1;
+                push @e, $href, @{ $ln->{elem} };
+                $w = $w1 + $ln->{w};
+                if (@c1) {
+                    unshift(@c, { %$c, text => [@c1] });
+                }
+            }
+        }
+
         last if $last;
     }
 
@@ -575,18 +642,26 @@ sub line {
         $h = $e->{h} if $h < $e->{h};
     }
 
-    if (@c && @e && ($width > $w)) {
-        # есть ещё контент, поэтому эту строчку надо растянуть
-        my $spc = @e-1;
-        $spc += $_->{spcnt} foreach @e;
-        if ($spc) {
-            my $ws = ($width - $w) / $spc;
-            $_->{ws} = $ws foreach @e;
-            $sw += $ws;
+    my $spcnt = undef;
+    foreach my $e (@e) {
+        if (!defined($spcnt)) {
+            $spcnt = 0;
         }
+        elsif (!$e->{nospl}) {
+            $spcnt ++;
+        }
+        $spcnt += $e->{spcnt};
+    }
+    $spcnt ||= 0;
+    
+    if (@c && $spcnt && ($width > $w)) {
+        # есть ещё контент, поэтому эту строчку надо растянуть
+        my $ws = ($width - $w) / $spcnt;
+        $_->{ws} = $ws foreach @e;
+        $sw += $ws;
     }
 
-    my $self = bless { w => $w, h => $h, sw => $sw, elem => [@e] }, shift();
+    my $self = bless { w => $w, h => $h, sw => $sw, spcnt => $spcnt, elem => [@e] }, shift();
     return $self, @c;
 }
 
@@ -610,9 +685,15 @@ sub empty { @{ shift()->{elem} } == 0 }
 sub run {
     my ($self, $p) = @_;
 
+    my $f = 1;
     foreach my $e (@{ $self->{elem} }) {
+        if ($f) {
+            undef $f;
+        }
+        elsif (!$e->{nospl}) {
+            $p->dx($self->{sw});
+        }
         $e->run($p);
-        $p->dx($self->{sw});
     }
 }
 
@@ -857,6 +938,11 @@ sub gfxclear {
     my $c = $self->{gfx}->{c};
     $self->gfxcol('#000') if $c;
     delete $self->{gfx};
+}
+
+sub annotation {
+    my $self = shift();
+    return $self->{page}->annotation();
 }
 
 1;
