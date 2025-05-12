@@ -191,6 +191,14 @@ sub _font {
     return $fall->{ $name } ||= $self->{pdf}->font($name);
 }
 
+sub _image {
+    my ($self, $fname) = @_;
+    
+    my $imgall = ($self->{imgall} ||= {});
+
+    return $imgall->{$fname} ||= $self->{pdf}->image($fname);
+}
+
 sub header {
     my ($self, %p) = @_;
 
@@ -251,33 +259,11 @@ sub paragraph {
     }
 }
 
-=pod
-
-    my %boundaries = $self->{page}->boundaries();
-    use Data::Dumper;
-    print Dumper \%boundaries, [$self->{page}->size()];
-
-    my $g = $self->{page}->graphics();
-    $g->line_dash_pattern();
-    $g->move(100, 500-12*0.2);
-    $g->hline(300);
-    $g->move(100, 500+12-12*0.2);
-    $g->hline(300);
-    $g->line_width(1);
-    $g->paint();
-
-    my $font = $pdf->font('Helvetica-Bold');
-    my $text = $self->{page}->text();
-    $text->font($font, 12);
-    $text->position(100, 500);
-    #$text->text('Hello World! might');
-    #$text->text('Hello World!', align => 'right', underline => 'auto');
-    #$text->text_justified('Hello World!', 595);
-   # my $str = qq~Word spacing might only affect simple fonts and composite fonts where the space character is a single-byte code. This is a limitation of the PDF specification at least as of version 1.7 (see section 9.3.3). It's possible that a later version of the specification will support word spacing in fonts that use multi-byte codes.~;
-   # my ($overflow, $height) = $text->paragraph($str, 200, 200, align => 'justify');
-    my ($overflow, $height) = $text->paragraph('Hello World! might', 200, 200, align => 'justify');
-    print Dumper $overflow, $height;
-=cut
+# ============================================================
+#
+#       SStyle
+#
+# ============================================================
 
 package SStyle;
 
@@ -338,6 +324,12 @@ sub ulpos {
     return $self->{font}->underlineposition() * $self->{size} / 1000 || 1;
 }
 
+# ============================================================
+#
+#       LineElem
+#
+# ============================================================
+
 package LineElem;
 
 # Горизонтальный элемент контента.
@@ -386,7 +378,7 @@ sub new {
     my ($class, $style, $width) = @_;
     my $self = $class->SUPER::new();
     $self->{style}  = $style;
-    $self->{maxw}   = $width;
+    $self->{maxw}   = $width if $width;
     $self->{spw}    = $style->width(' ');   # ширина пробела для данного шрифта
     $self->{wrd}    = [];                   # список слов: [строка, ширина слова]
 
@@ -401,7 +393,7 @@ sub add {
     my $ww = $self->{style}->width($wrd);               # ширина добавляемого слова
     my $sw = @{ $self->{wrd} } ? $self->{spw} : 0;      # нужно ли добавлять ширину пробела
     my $fw = $self->{w} + $sw + $ww;                    # ширина строки с учётом добавляемого слова
-    return if $self->{maxw} < $fw;
+    return if $self->{maxw} && ($self->{maxw} < $fw);
     
     $self->{spcnt} = @{ $self->{wrd} };
     $self->{w} = $fw;
@@ -531,11 +523,42 @@ sub run {
     $g->hline($p->{x} + $r->{w} + $r->{spcnt}*$self->{ws});
     $g->stroke();
 
-    my $an = $p->annotation();
+    my $an = $p->{page}->annotation();
     $an->rect($p->{x}, $p->{y} - 3, $p->{x} + $r->{w} + $r->{spcnt}*$self->{ws}, $p->{y} - 3 + $r->{h});
     $an->uri($self->{url});
 }
 
+package LineImg;
+# image
+use base 'LineElem';
+
+sub new {
+    my ($class, $img, $url, $title) = @_;
+    my $self = $class->SUPER::new();
+    $self->{img} = $img;
+    $self->{url} = $url;
+
+    $self->{w} = $img->width();
+    $self->{h} = $img->height();
+
+    $self->{title} = $title if $title;
+
+    return $self;
+}
+
+sub run {
+    my ($self, $p) = @_;
+
+    $p->{page}->object($self->{img}, $p->{x}, $p->{y});
+    $p->dx($self->{w});
+}
+
+
+# ============================================================
+#
+#       LineFull
+#
+# ============================================================
 
 package LineFull;
 
@@ -641,6 +664,28 @@ sub line {
                 }
             }
         }
+        elsif ($c->{type} eq 'image') {
+            my $img = eval { $style->{out}->_image($c->{url}) };
+
+            my $e;
+            if ($img) {
+                $e = LineImg->new($img, $c->{url}, $c->{title});
+            }
+            elsif ($c->{alt}) {
+                $e = LineStr->new($style);
+                $e->add('[' . $c->{alt} . ']');
+            }
+
+            $e || next;
+
+            if (($e->{w} > $w) && !$ln->empty()) {
+                unshift(@c, $c);
+                $last = 1;
+            }
+            else {
+                $ln->add( $e );
+            }
+        }
 
         last if $last;
     }
@@ -732,6 +777,13 @@ sub run {
     delete $p->{text};
     $p->gfxclear();
 }
+
+
+# ============================================================
+#
+#       Page
+#
+# ============================================================
 
 package Page;
 
@@ -959,11 +1011,6 @@ sub gfxclear {
     my $c = $self->{gfx}->{c};
     $self->gfxcol('#000') if $c;
     delete $self->{gfx};
-}
-
-sub annotation {
-    my $self = shift();
-    return $self->{page}->annotation();
 }
 
 1;
