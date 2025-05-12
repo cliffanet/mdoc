@@ -373,6 +373,7 @@ sub new {
 }
 
 sub run {}
+sub empty {}
 
 package LineStr;
 # Простой текстовый элемент строки.
@@ -539,21 +540,38 @@ sub run {
 package LineFull;
 
 sub new {
-    return bless { w => 0, h => 0, spcnt => 0, elem => [] }, shift();
+    my $class = shift;
+
+    my $self = bless(
+        {
+            w       => 0,
+            h       => 0,
+            spw     => 0,
+            spcnt   => 0,
+            ws      => 0,
+            elem    => []
+        },
+        $class
+    );
+
+    if (my $style = shift()) {
+        $self->{spw} = $style->width(' ');
+    }
+
+    return $self;
 }
 
 sub line {
     my ($class, $style, $width, @c) = @_;
     
-    my $sw = $style->width(' ');
-    my ($w, @e) = 0;
+    my $ln = $class->new($style);
 
     while (my $c = shift @c) {
-        my $w1 = $w + (@e ? $sw : 0);
+        my $w = $width - ($ln->{w} + ($ln->empty() ? 0 : $ln->{spw}));
         my $last;
 
         if (ref($c) eq 'Str') {
-            my $e = LineStr->new($style, $width - $w1);
+            my $e = LineStr->new($style, $w);
             while (my ($wrd, $n) = $c->word()) {
                 if ($e->add($wrd->{str})) {
                     $c = $n || last;
@@ -564,24 +582,19 @@ sub line {
                 $last = 1;
                 last;
             }
-            
-            if (!$e->empty()) {
-                push @e, $e;
-                $w = $w1 + $e->{w};
-            }
+            $ln->add($e);
         }
         elsif (($c->{type} eq 'bold') || ($c->{type} eq 'italic')) {
             my $s1 = $style->clone($c->{type} => 1);
-            my ($ln, @c1) = $class->line($s1, $width - $w1, @{ $c->{text} });
+            my ($ln1, @c1) = $class->line($s1, $w, @{ $c->{text} });
 
-            if ($ln->empty()) {
+            if ($ln1->empty()) {
                 unshift(@c, $c);
                 $last = 1;
                 last;
             }
             else {
-                push @e, @{ $ln->{elem} };
-                $w = $w1 + $ln->{w};
+                $ln->add(@{ $ln1->{elem} });
                 if (@c1) {
                     unshift(@c, { %$c, text => [@c1] });
                 }
@@ -589,7 +602,7 @@ sub line {
         }
         elsif ($c->{type} eq 'inlinecode') {
             my $s = Str->new($c->{str}, row => $c->{row}, col => $c->{col});
-            my $e = LineICode->new($style, $width - $w1);
+            my $e = LineICode->new($style, $w);
             while (my ($wrd, $n) = $s->word()) {
                 if ($e->add($wrd->{str})) {
                     $s = $n || last;
@@ -600,34 +613,29 @@ sub line {
                 $last = 1;
                 last;
             }
-            
-            if (!$e->empty()) {
-                push @e, $e;
-                $w = $w1 + $e->{w};
-            }
+            $ln->add($e);
         }
         elsif ($c->{type} eq 'href') {
-            my ($ln, @c1) = $class->line($style, $width - $w1, @{ $c->{text} });
+            my ($ln1, @c1) = $class->line($style, $w, @{ $c->{text} });
 
-            if ($ln->empty()) {
+            if ($ln1->empty()) {
                 unshift(@c, $c);
                 $last = 1;
                 last;
             }
             else {
-                my $href = LineHref->new($ln->{w}, $ln->{h}, $ln->{spcnt}, $c->{url});
+                my $href = LineHref->new($ln1->{w}, $ln1->{h}, $ln1->{spcnt}, $c->{url});
                 # $href должен быть перед текстовыми элементами, чтобы были
                 # корректными x и y.
                 # И т.к. $href является отдельным элементом, надо доработать
                 # межэлементные интервалы: у $href nospl должен соответствовать
-                # первому элементу в $ln->{elem}, а для первого элемента
+                # первому элементу в $ln1->{elem}, а для первого элемента
                 # nospl должен быть обязательно установлен, чтобы не было
-                # промежутков между $href и $ln->{elem}.
-                my $e0 = $ln->{elem}->[0];
+                # промежутков между $href и $ln1->{elem}.
+                my $e0 = $ln1->{elem}->[0];
                 $href->{nospl} = 1 if $e0->{nospl};
                 $e0->{nospl} = 1;
-                push @e, $href, @{ $ln->{elem} };
-                $w = $w1 + $ln->{w};
+                $ln->add($href, @{ $ln1->{elem} });
                 if (@c1) {
                     unshift(@c, { %$c, text => [@c1] });
                 }
@@ -636,33 +644,13 @@ sub line {
 
         last if $last;
     }
-
-    my $h = 0;
-    foreach my $e (@e) {
-        $h = $e->{h} if $h < $e->{h};
-    }
-
-    my $spcnt = undef;
-    foreach my $e (@e) {
-        if (!defined($spcnt)) {
-            $spcnt = 0;
-        }
-        elsif (!$e->{nospl}) {
-            $spcnt ++;
-        }
-        $spcnt += $e->{spcnt};
-    }
-    $spcnt ||= 0;
     
-    if (@c && $spcnt && ($width > $w)) {
+    if (@c) {
         # есть ещё контент, поэтому эту строчку надо растянуть
-        my $ws = ($width - $w) / $spcnt;
-        $_->{ws} = $ws foreach @e;
-        $sw += $ws;
+        $ln->justify($width);
     }
 
-    my $self = bless { w => $w, h => $h, sw => $sw, spcnt => $spcnt, elem => [@e] }, shift();
-    return $self, @c;
+    return $ln, @c;
 }
 
 sub bycont {
@@ -680,6 +668,39 @@ sub bycont {
     return @all;
 }
 
+sub add {
+    my $self = shift;
+
+    foreach my $e (@_) {
+        next if $e->empty();
+
+        if (@{ $self->{elem} } && !$e->{nospl} && $self->{spw}) {
+            $self->{w} += $self->{spw};
+            $self->{spcnt} ++;
+        }
+        if ($e->{w}) {
+            $self->{w} += $e->{w};
+        }
+
+        $self->{h} = $e->{h} if $self->{h} < $e->{h};
+
+        if ($e->{spcnt}) {
+            $self->{spcnt} += $e->{spcnt};
+        }
+
+        push @{ $self->{elem} }, $e;
+    }
+}
+
+sub justify {
+    my ($self, $width) = @_;
+
+    return if !$self->{spcnt} || ($width < $self->{w});
+
+    $self->{ws} = ($width - $self->{w}) / $self->{spcnt};
+    $_->{ws} = $self->{ws} foreach @{ $self->{elem} };
+}
+
 sub empty { @{ shift()->{elem} } == 0 }
 
 sub run {
@@ -691,7 +712,7 @@ sub run {
             undef $f;
         }
         elsif (!$e->{nospl}) {
-            $p->dx($self->{sw});
+            $p->dx($self->{spw} + $self->{ws});
         }
         $e->run($p);
     }
