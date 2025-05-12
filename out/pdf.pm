@@ -242,6 +242,41 @@ sub header {
     $p->add($_) foreach @ln;
 }
 
+sub code {
+    # для code хорошо бы сделать парсинг кода,
+    # но пока просто доблируем работу textblock
+    textblock(@_);
+}
+
+sub textblock {
+    my ($self, %p) = @_;
+    
+    my $p = $self->_page();
+    $p->vindent(12);
+    my $block = TextBox->new($p->{maxw}, $p->havail());
+    my $style = SStyle->new($self, font => 'PTMono.ttf');
+
+    my @ln =
+        map {
+            my $ln  = LineFull->new();
+            my $s   = LineStr->new($style);
+            $s->add($_->{str});
+            $ln->add( $s );
+            $ln;
+        }
+        @{ $p{ text } };
+
+    foreach my $ln (@ln) {
+        next if $block->add($ln);
+
+        # не хватило места на странице
+        $p->add($block) if !$block->empty();
+        $p = $self->_pageadd();
+        $block = TextBox->new($p->{maxw}, $p->havail());
+    }
+    $p->add($block) if !$block->empty();
+}
+
 sub paragraph {
     my ($self, %p) = @_;
 
@@ -774,6 +809,77 @@ sub new {
 sub run {
     my ($self, $p) = @_;
 
+    delete $p->{text};
+    $p->gfxclear();
+}
+
+package TextBox;
+
+sub new {
+    my ($class, $maxw, $maxh, $pad) = @_;
+
+    $pad //= 16;
+
+    return bless(
+        {
+            w       => 0,
+            h       => $pad * 2,
+            pad     => $pad,
+            maxw    => $maxw - $pad * 2,
+            maxh    => $maxh,
+            line    => []
+        },
+        $class
+    );
+}
+
+sub empty { @{ shift()->{line} } == 0 }
+
+sub havail {
+    my $self = shift;
+    return $self->{maxh} - $self->{h};
+}
+
+sub add {
+    my ($self, $ln) = @_;
+
+    return if $ln->{h} > $self->havail();
+
+    push @{ $self->{line} }, $ln;
+
+    $self->{w} = $ln->{w} if $self->{w} > $ln->{w};
+
+    $self->{h} += $ln->{h};
+
+    return 1;
+}
+
+sub run {
+    my ($self, $p) = @_;
+
+    # т.к. мы тут слишком вручную правим $p->{x} и $p->{y},
+    # то сбросим текст и графику обязательно перед и после нашей обработки
+    delete $p->{text};
+    $p->gfxclear();
+
+    $p->gfxcol('#888');
+    $p->rrect($p->{x}, $p->{y}, $self->{maxw} + $self->{pad}*2, $self->{h}, ($self->{pad} || 10) / 2);
+
+    my $t = $p->_text()->{o};
+    $t->fill_color('#fff');
+
+    my $x = $p->{x} + $self->{pad};
+    my $y = $p->{y};
+    $p->{y} += $self->{h} - $self->{pad} + 2;
+
+    foreach my $ln (@{ $self->{line} }) {
+        $p->{x} = $x;
+        $p->{y} -= $ln->{h};
+        $ln->run($p);
+    }
+
+    $p->{y} = $y;
+    $t->fill_color('#000');
     delete $p->{text};
     $p->gfxclear();
 }
