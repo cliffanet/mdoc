@@ -373,6 +373,18 @@ sub paragraph {
 
 =cut
 
+sub header {
+    my ($self, %p) = @_;
+
+    my @size = ( 22, 18, 14, 12, 11 );
+    my $sz = ($p{deep} > 0) && ($p{deep} <= @size) ? $size[ $p{deep}-1 ] : $size[ @size-1 ];
+    my $style = SStyle->new($self, bold => 1, size => $sz);
+
+    my $c = FHeader->new($style, $self->{context}->{maxw});
+    $self->{context}->add($c);
+    $c->content(@{ $p{ content } });
+}
+
 sub paragraph {
     my ($self, %p) = @_;
 
@@ -1545,7 +1557,7 @@ sub recalc {
     # Убеждаемся, что выше по дереву тоже всё в допустимых рамках,
     # это надо сделать до возвращения удалённых @over, чтобы
     # сначала текущая структура закрепилась
-    $own->szupd();
+    $own->recalc();
 
     # При переполнении себя делаем передобавление своей копии
     # у вышестоящего уровня
@@ -1711,9 +1723,14 @@ sub new {
     return $self;
 }
 
-sub add { push @{ shift()->{elem} }, @_; }
+sub add {
+    my $self = shift;
+
+    $_->{own} = $self foreach @_;
+    push @{ $self->{elem} }, @_;
+}
 # заглушка, которую будут дёргать нижестоящие элементы
-sub szupd {}
+sub recalc {}
 
 sub draw {
     my $self = shift;
@@ -1747,7 +1764,7 @@ sub new {
         maxw    => $w - $mleft - $mright, 
         maxh    => $h - $mbottom - $mtop,
         # расстояние между абзацами
-        spc     => 16,
+        spc     => 12,
     );
 }
 
@@ -1971,13 +1988,13 @@ sub draw {
 
     if (my $spa = $self->{spa}) { # указано дополнительное расстояние между словами
         foreach my $e (@{ $self->{elem} }) {
-            $d->text($x, $y, $e->{str});
+            $d->text($x, $y - $self->{style}->ulpos(), $e->{str});
             $x += $e->{w} + $self->{spc} + $spa;
         }
     }
     else {
         # если текст не надо растягивать, выводим его простой строкой с пробелами
-        $d->text($x, $y, join(' ', map { $_->{str} } @{ $self->{elem} }));
+        $d->text($x, $y - $self->{style}->ulpos(), join(' ', map { $_->{str} } @{ $self->{elem} }));
     }
 }
 
@@ -2007,7 +2024,7 @@ sub draw {
 
     $d->gfxcol('#aaa');
     my $yz = $self->{style}->{size} * 0.2 - 1;
-    $d->rrect($x, $y + $self->{style}->ulpos() - $yz, $self->{w}, $self->{style}->{size} + $yz*2, 4);
+    $d->rrect($x, $y - $yz, $self->{w}, $self->{style}->{size} + $yz*2, 4);
 
     $self->SUPER::draw($x + $self->{pad}, $y, $pdf, $page, $d);
 }
@@ -2027,18 +2044,16 @@ sub new {
 sub draw {
     my ($self, $x, $y, $pdf, $page, $d) = @_;
 
-    my $y1 = $y + $self->{style}->ulpos();
-
     $d->gfxcol('#000');
     my $g = $d->gfx();
-    $g->move($x, $y1);
+    $g->move($x, $y);
     $g->hline($x + $self->{w});
     $g->stroke();
 
     $self->SUPER::draw($x, $y, $pdf, $page, $d);
 
     my $an = $page->annotation();
-    $an->rect($x, $y1, $x + $self->{w}, $y1 + $self->{h});
+    $an->rect($x, $y, $x + $self->{w}, $y + $self->{h});
     $an->uri($self->{url});
 }
 
@@ -2064,6 +2079,39 @@ sub draw {
     my ($self, $x, $y, $pdf, $page, $d) = @_;
 
     $page->object($self->{img}, $x, $y);
+}
+
+
+# ============================================================
+#
+#       Блок-абзацы
+#
+# ============================================================
+
+package FHeader;
+use base 'FContent';
+
+# этот блок неразрывный, поэтому не даём себя разрезать на части в recalc,
+# сразу перенаправляем этот запрос выше
+sub recalc {
+    my $self = shift();
+
+    $self->szupd();
+
+    my $own = $self->{own} || return;
+    $own->recalc();
+
+    # Но задача усложняется ещё и тем, что нам надо не просто поместиться
+    # на странице, но ещё чтобы после нас поместилась хотябы одна строчка.
+    # Проверяем в самом ли конце списка родителя мы
+    return if $own->empty() || ($own->{elem}->[ @{ $own->{elem} } - 1 ] ne $self);
+    # Смотрим, сколько ещё места осталось у родителя, вместе с нами:
+    return if $own->havail() > $own->{spc} + 15;
+
+    # вырезаем себя у родителя (текущей страницы)
+    pop @{ $own->{elem} };
+    # просим страницу передобавиться и возвращаем себя
+    $own->fulled($self);
 }
 
 1;
