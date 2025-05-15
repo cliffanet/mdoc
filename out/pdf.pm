@@ -1650,6 +1650,44 @@ sub draw {
     }
 }
 
+#####
+# Механизм растягивания за счёт внутренних интервалов между элементами.
+# Для этого существует поле spa. Но его ещё надо корректно вычислить.
+# У нас может быть строка глубокой вложенности элементов.
+# 
+# 1. рекурсивно вниз считаем суммарное число элементов
+# 2. высчитываем размер одного такого интервала
+# 3. снова рекурсивно устанавливаем одинаковый spa для всех
+#
+# пп 1,3 надо делать только для тех элементов, которые поддерживают
+# рекурсивную установку spa
+package Justified;
+
+sub spacnt {
+    my $self = shift;
+    my $cnt = @{ $self->{elem} } || return 0;
+    $cnt --;
+    foreach my $e (@{ $self->{elem} }) {
+        $e->{elem} || next;
+        $e->can('spacnt') || next;
+        $cnt += $e->spacnt();
+    }
+    return $cnt;
+}
+
+sub spaset {
+    my ($self, $spa) = @_;
+
+    foreach my $e (@{ $self->{elem} }) {
+        $e->{elem} || next;
+        $e->can('spaset') || next;
+        $e->spaset($spa);
+    }
+
+    $self->{spa} = $spa;
+    $self->szupd();
+}
+
 
 # ============================================================
 #
@@ -1743,12 +1781,62 @@ sub draw {
 
 # ============================================================
 #
+#       Парсер строчных элементов
+#
+# ============================================================
+
+package FInlineParser;
+
+sub inadd { shift()->add(@_); }
+
+sub content {
+    my $self = shift;
+
+    foreach my $c (@_) {
+        if (ref($c) eq 'Str') {
+            next if $c->empty(); # попадаются пустые строки с пробелом
+            my $e = FStr->new($self->{style});
+            $self->inadd($e);
+            $e->add($c->{str});
+        }
+        elsif (($c->{type} eq 'bold') || ($c->{type} eq 'italic')) {
+            local $self->{style} = $self->{style}->clone($c->{type} => 1);
+            $self->content(@{ $c->{text} });
+        }
+        elsif ($c->{type} eq 'inlinecode') {
+            my $e = InlineCode->new($self->{style});
+            $self->inadd($e);
+            $e->add($c->{str});
+        }
+        elsif ($c->{type} eq 'href') {
+            my $e = FHref->new($self->{style}, $c->{url});
+            $self->inadd($e);
+            $e->content(@{ $c->{text} });
+        }
+        elsif ($c->{type} eq 'image') {
+            my $img = eval { $self->{style}->{out}->_image($c->{url}) };
+
+            my $e;
+            if ($img) {
+                $e = FImage->new($img, $c->{url}, $c->{title});
+            }
+            elsif ($c->{alt}) {
+                $e = FStr->new($self->{style});
+                $e->add('[' . $c->{alt} . ']');
+            }
+            $self->inadd($e);
+        }
+    }
+}
+
+# ============================================================
+#
 #       Блочные элементы
 #
 # ============================================================
 
 package FContent;
-use base 'FrameV';
+use base 'FrameV', 'FInlineParser';
 
 sub new {
     my ($class, $style, $width) = @_;
@@ -1774,17 +1862,7 @@ sub lastline {
     return $e->[@$e - 1];
 }
 
-sub content {
-    my $self = shift;
-
-    foreach my $c (@_) {
-        if (ref($c) eq 'Str') {
-            my $e = FStr->new($self->{style});
-            $self->lastline()->add($e);
-            $e->add($c->{str});
-        }
-    }
-}
+sub inadd { shift()->lastline()->add(@_); }
 
 sub draw {
     my ($self, $x, $y, $pdf, $page) = @_;
@@ -1795,7 +1873,7 @@ sub draw {
 }
 
 package FContentLine;
-use base 'FrameH';
+use base 'FrameH', 'Justified';
 
 sub new {
     my ($class, $style, $width) = @_;
@@ -1810,24 +1888,8 @@ sub justify {
     my $self = shift;
 
     my $max = $self->maxw() // return;
-    my $spcnt = @{ $self->{elem} } || return;
-        
-    $spcnt--;
-    foreach my $e (@{ $self->{elem} }) {
-        my $eall = $e->{elem} || next;
-        my $c = @$eall || next;
-        $spcnt += $c-1;
-    }
-
-    $spcnt || return;
-
-    $self->{spa} = ($max - $self->{w}) / $spcnt;
-    foreach my $e (@{ $self->{elem} }) {
-        @{ $e->{elem} || [] } || next;
-        $e->{spa} = $self->{spa};
-        $e->szupd();
-    }
-    $self->szupd();
+    my $spacnt = $self->spacnt() || return;
+    $self->spaset(($max - $self->{w}) / $spacnt);
 }
 
 sub fulled {
@@ -1848,16 +1910,14 @@ sub fulled {
 # ============================================================
 
 package FStr;
-use base 'FrameH';
+use base 'FrameH', 'Justified';
 
 sub new {
     my ($class, $style) = @_;
-    my $self = $class->SUPER::new(
+    return $class->SUPER::new(
         style   => $style,
         spc     => $style->width(' '),
     );
-
-    return $self;
 }
 
 sub add {
@@ -1919,6 +1979,91 @@ sub draw {
         # если текст не надо растягивать, выводим его простой строкой с пробелами
         $d->text($x, $y, join(' ', map { $_->{str} } @{ $self->{elem} }));
     }
+}
+
+package InlineCode;
+use base 'FStr';
+
+sub new {
+    my $self = shift()->SUPER::new(@_);
+    $self->{pad} = $self->{style}->width(' ');
+    return $self;
+}
+
+sub wavail {
+    my $self = shift;
+    my $max = $self->SUPER::wavail(@_) // return;
+    return $max - $self->{pad} * 2;
+}
+
+sub szupd {
+    my $self = shift;
+    $self->SUPER::szupd(@_);
+    $self->{w} += ($self->{pad}||0) * 2;
+}
+
+sub draw {
+    my ($self, $x, $y, $pdf, $page, $d) = @_;
+
+    $d->gfxcol('#aaa');
+    my $yz = $self->{style}->{size} * 0.2 - 1;
+    $d->rrect($x, $y + $self->{style}->ulpos() - $yz, $self->{w}, $self->{style}->{size} + $yz*2, 4);
+
+    $self->SUPER::draw($x + $self->{pad}, $y, $pdf, $page, $d);
+}
+
+package FHref;
+use base 'FrameH', 'Justified', 'FInlineParser';
+
+sub new {
+    my ($class, $style, $url) = @_;
+    return $class->SUPER::new(
+        style   => $style,
+        spc     => $style->width(' '),
+        url     => $url,
+    );
+}
+
+sub draw {
+    my ($self, $x, $y, $pdf, $page, $d) = @_;
+
+    my $y1 = $y + $self->{style}->ulpos();
+
+    $d->gfxcol('#000');
+    my $g = $d->gfx();
+    $g->move($x, $y1);
+    $g->hline($x + $self->{w});
+    $g->stroke();
+
+    $self->SUPER::draw($x, $y, $pdf, $page, $d);
+
+    my $an = $page->annotation();
+    $an->rect($x, $y1, $x + $self->{w}, $y1 + $self->{h});
+    $an->uri($self->{url});
+}
+
+package FImage;
+
+sub new {
+    my ($class, $img, $url, $title) = @_;
+
+    my $self = bless(
+        {
+            w   => $img->width(),
+            h   => $img->height(),
+            img => $img,
+            url => $url
+        }
+    );
+    $self->{title} = $title if $title;
+
+    return $self;
+}
+
+sub draw {
+    my ($self, $x, $y, $pdf, $page, $d) = @_;
+
+    $page->object($self->{img}, $x, $y);
 }
 
 1;
