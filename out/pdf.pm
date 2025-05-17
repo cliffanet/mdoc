@@ -174,22 +174,9 @@ sub new {
     $self->{font} = $self->_font('Arial.ttf');
     $self->{size} = 11;
 
-    $self->{doc} = FDocument->new();
-    # создаём первую страницу, остальные
-    # будут копировать параметры (движок Frame::recalc)
-    $self->{context} = FPage->new(
-        '', # page size
-        ($self->{margin}||{})->{left},
-        ($self->{margin}||{})->{right},
-        ($self->{margin}||{})->{top},
-        ($self->{margin}||{})->{bottom}
-    );
-    $self->{doc}->add($self->{context});
-
-
-    $self->{ddoc} = DDocument->new();
+    $self->{doc} = DDocument->new();
     $self->{ctx} = DPage->new();
-    $self->{ddoc}->add($self->{ctx});
+    $self->{doc}->add($self->{ctx});
     # после переезда на этот движок, надо будет
     # упрастить работу с классом SStyle
     $self->{style} = SStyle->new($self);
@@ -206,32 +193,18 @@ sub data {
     # К этому моменту мы выполнили только первый этап - сформировали
     # базовую структуру и ещё ничего не знаем о размерностях.
 
-    # Теперь нам надо выполнить второй этап - распределить
-    # элементы по пространству на документе, страницах и т.д.
-    $self->{ddoc}->stage2size($self);
+    # На втором этапе мы должны задать размеры всем элементам. Для
+    # этого нужно будет импортировать в $pdf шрифты и изображения,
+    # Без этого не узнаем размеры элементарных объектов.
+    $self->{doc}->stage2size($self);
 
     # Теперь распределяем согласно нашим размерам.
     # Сверху до уровня страниц нам надо передать размерность страницы
     # и размеры всех полей.
-    $self->{ddoc}->stage3layout('A4', %{ $self->{margin} });
+    $self->{doc}->stage3layout('A4', %{ $self->{margin} });
 
     # И, наконец, выводим содержимое
-    $self->{ddoc}->draw( $self->{pdf} );
-
-    # ----------------------
-    # старый вариант
-
-    # Мы могли бы создавать сам pdf-объект прямо здесь, но при формировании
-    # списка элемента нам важно знать высоту и ширину текста, а для
-    # этого нужно знать шрифты, это умеет только сам объект pdf.
-
-    # На стадии сборки списка элементов от pdf-объекта нужны:
-    #   - шрифты,
-    #   - создание внешних объектов (картинки)
-    #
-    # Всё остальное делается уже тут - это и есть стадия отрисовки страниц.
-
-    #$self->{doc}->draw( $self->{pdf} );
+    $self->{doc}->stage4draw( $self->{pdf} );
     
     return $self->{pdf}->to_string();
 }
@@ -402,14 +375,6 @@ sub paragraph {
 sub header {
     my ($self, %p) = @_;
 
-    #my @size = ( 22, 18, 14, 12, 11 );
-    #my $sz = ($p{deep} > 0) && ($p{deep} <= @size) ? $size[ $p{deep}-1 ] : $size[ @size-1 ];
-    #my $style = SStyle->new($self, bold => 1, size => $sz);
-
-    #my $c = FHeader->new($style, $self->{context}->{maxw});
-    #$self->{context}->add($c);
-    #$c->content(@{ $p{ content } });
-
     my $c = DHeader->new($p{deep}, @{ $p{ content } });
     $self->{ctx}->add( $c );
 }
@@ -430,10 +395,6 @@ sub textblock {
 
 sub paragraph {
     my ($self, %p) = @_;
-
-    #my $c = FContent->new(SStyle->new($self), $self->{context}->{maxw});
-    #$self->{context}->add($c);
-    #$c->content(@{ $p{ content } });
 
     my $c = DContent->new(@{ $p{ content } });
     $self->{ctx}->add( $c );
@@ -1438,741 +1399,6 @@ sub gfxclear {
 =cut
 
 
-# ============================================================
-#
-#       Frame
-#
-# ============================================================
-
-# Принцип работыFrame-блоков двухэтапный:
-#
-# 1. Сначала мы формируем структуру, в которой нам надо знать
-# только допустимые границы (w/h), на каждом уровне набиваем
-# элементами.
-#
-# На этой стадии нам надо будет иметь возможность запрашивать
-# выделение следующего фрейма с подвариантами:
-#   а) оставить заполненный фрейм в том месте, где он и выделялся
-#   б) запросить новый фрейм у уровня выше и перенести
-#   туда всё, что мы только что заполняли на текущем уровне,
-#   с обновлением параметров границ.
-#
-# Т.е. на текущем уровне вложенности мы будем просто заполнять
-# элементами, а в случае переполнения на каком-то из уровней
-# должно автоматически приняться необходимое решение, как именно
-# выполнить переход к следующему фрейму.
-#
-# 2. Имея полную структуру с размерами на каждом уровне
-# будем отрисовывать все элементы, передавая им текущие x/y.
-
-package Frame;
-
-sub new {
-    my $class = shift();
-
-    my $self = bless(
-        {
-            # Интервал между элементами: основной и дополнительный.
-            # Оба интервала суммируются и применяются между элементами,
-            # т.е. перед первым элементом отсуп не применяется.
-            spc     => 0,
-            # Дополнительный интервал применяется снаружи, когда
-            # вышестоящий уровень хочет ещё дополнительно увеличить
-            # ширину всех своих элементов за счёт интервалов внутри
-            # каждого элемента
-            spa    => 0,
-            @_,
-            elem    => [],
-        },
-        $class
-    );
-
-    $self->szupd();
-
-    return $self;
-}
-
-sub empty { @{ shift()->{elem} } == 0; }
-
-# проверка, что на данном уровне нас устраивают текущие размеры
-sub szchk { 1 }
-
-sub szupd {}
-sub _szupd {
-    my ($self, $fs, $fm) = @_;
-    # fs - суммируемое поле
-    # fm - поле с максимальным значением
-
-    $self->{w} = 0;
-    $self->{h} = 0;
-    foreach my $e (@{ $self->{elem} }) {
-        $self->{$fs} += $e->{$fs};
-        $self->{$fm} = $e->{$fm} if $self->{$fm} < $e->{$fm};
-    }
-
-    my $wcnt = @{ $self->{elem} };
-    $self->{$fs} += ($self->{spc} + $self->{spa}) * ($wcnt-1) if $wcnt;
-}
-
-sub _max {
-    my ($self, $f) = @_;
-
-    my $max = $self->{'max'.$f};
-    return $max if defined $max;
-
-    my $own = $self->{own} || return;
-    my $m = $own->can($f . 'avail') || return;
-    return $m->($own, $self);
-}
-
-sub _avail {
-    my ($self, $fs, $ef) = @_;
-
-    my $m = $self->can('max' . $fs) || return;
-    my $max = $m->($self) // return;
-
-    foreach my $e (@{ $self->{elem} }) {
-        next if $ef && ($e eq $ef);
-        # Добавочный интервал не применяется при вычислении
-        # оставшегося места, используем только основной интервал
-        $max -= $e->{$fs} + $self->{spc};
-    }
-
-    return $max;
-}
-
-sub fulled {
-    my $self = shift;
-    # когда в текущем блоке место закончилось, надо
-    # выполнить рокировку - у вышестоящего уровня
-    # вместо себя помещаем свою копию, а себя
-    # очищаем и передобавляем
-    my $own = $self->{own} || return;
-
-    # Вместо себя в списке текущего own надо оставить
-    # копию себя (заменить себя на копию).
-    my $dup = bless({ %$self }, ref($self));
-    foreach my $e (@{ $own->{elem} }) {
-        next if $e ne $self;
-        $e = $dup;
-        last;
-    }
-
-    # А в себе оставляем только @over
-    delete $self->{own};
-    # В аргументах можно передать новый собственный список
-    $self->{elem} = [@_];
-    $self->szupd();
-    # А себя добавляем в конец списка в own
-    $own->add($self);
-    # Важно именно в такой последовательности, чтобы 
-    # на нашем месте в списке вышестоящего оказалась наша копия,
-    # а наш экземпляр объекта оказался в конце и пустым.
-    # В этом случае ссылка на наш объект, которая где-то
-    # за пределами пытается добавлять в нас новые подэлементы,
-    # могла дальше это делать.
-}
-
-sub recalc {
-    my $self = shift;
-
-    $self->szupd();
-
-    # Если это верх дерева и родителя нет,
-    # то мы не сможем в родителе добавить
-    # пустую копию себя, поэтому ограничимся
-    # тем, что обновим свой размер.
-    my $own = $self->{own} || return;
-
-    my @over = (); # непоместившияся подэлементы
-    # Мы не будем переносить крайни элемент, если у нас
-    # кроме него больше ничего нет - нет никакого смысла
-    # оставлять себя пустым. Такая ситуация возможна,
-    # если даже один добавляемый элемент не влезает 
-    # в выделенную область. Например, если слово слишком
-    # длинное, что даже оно одно не влезает в ширину строки.
-    # В этом случае оставляем переполнение таким, какое есть.
-    while (( @{ $self->{elem} } > 1 ) && !$self->szchk()) {
-        # У нас есть возможность удалить лишний элемент
-        # а текущий размер нас не устраивает:
-        # Удаляем крайнее и снова обновляем свой размер.
-        unshift @over, pop( @{ $self->{elem} } );
-        $self->szupd();
-    }
-
-    # Убеждаемся, что выше по дереву тоже всё в допустимых рамках,
-    # это надо сделать до возвращения удалённых @over, чтобы
-    # сначала текущая структура закрепилась
-    $own->recalc();
-
-    # При переполнении себя делаем передобавление своей копии
-    # у вышестоящего уровня
-    $self->fulled(@over) if @over;
-}
-
-sub add {
-    my $self = shift;
-    # Допустим, у нас есть дерево элементов:
-    #
-    #       L0 -> L1 -> L2
-    #
-    # И мы хотим внутри элемента L2 добавить ещё несколько элементов,
-    # после чего обновим размеры L2 -> L1 -> L0. И на каждом из уровней
-    # может возникнуть превышение допустимых размеров. И если для L2
-    # это превышение способно выясниться ещё до добавления, то для
-    # остальных уровней это изменение уже добавленных элементов и список
-    # надо пересобрать.
-
-    # В случае переполнения возможны два варианта:
-    # 
-    # 1. Мы ещё на стадии добавления подэлемента понимаем, что он
-    #    не влезет и нужен перенос. Например, при добавлении слова
-    #    к строчке.
-    #
-    # 2. На стадии добавления элемента было всё нормально, но в процессе
-    #    его наполнения внутрь себя подэлементами любой степени
-    #    вложенности стало понятно, что он превысил допустимый размер.
-    #    Например, если в заголовке появилась новая строка, которая
-    #    уже не влазит на этой странице, и надо весь заголовок перенести
-    #    на следующую.
-    #
-    # Обработка обоих вариантов позволяет не делать лишнее добавление
-    # в список, но в этом случае у нас сильно усложняется алгоритм,
-    # появляется много вспомогательных методов, куда надо передавать
-    # списком множество аргументов.
-
-    # Для упрощения первую ситуацию будем обрабатывать точно так же,
-    # как вторую - сначала добавляем элемент, а потом при пересчёте
-    # своего размера принимаем решение о переносе крайнего элемента.
-    # В этом случае нам в некоторых случаях придётся делать удаление
-    # из списка сразу после добавления в него подэлемента, но зато
-    # количество вспомогательных методов сильно сокращается, аргументы
-    # в них уже передавать не надо (работаем только с тем, что есть
-    # в $self), а логика этих методов сильно упрощается.
-
-    foreach my $e (@_) {
-        # выполняем фактическое добавление элемента
-        $e->{own} = $self;
-        push @{ $self->{elem} }, $e;
-
-        $self->recalc();
-    }
-}
-
-sub draw {}
-
-package FrameH; # Блок горизонтального заполнения
-use base 'Frame';
-
-sub szupd   { shift()->_szupd('w', 'h'); }
-sub maxw    { shift()->_max  ('w'); }
-sub wavail  { shift()->_avail('w', @_); }
-
-sub szchk {
-    my $self = shift;
-    my $max = $self->maxw() // return 1;
-    return $self->{w} <= $max;
-}
-
-sub draw {
-    my ($self, $x, $y, @p) = @_;
-
-    foreach my $e (@{ $self->{elem} }) {
-        $e->draw($x, $y, @p);
-        $x += $e->{w} + $self->{spc} + $self->{spa};
-    }
-}
-
-package FrameV; # Блок вертикального заполнения
-use base 'Frame';
-
-sub szupd   { shift()->_szupd('h', 'w'); }
-sub maxh    { shift()->_max  ('h'); }
-sub havail  { shift()->_avail('h', @_); }
-
-sub szchk {
-    my $self = shift;
-    my $max = $self->maxh() // return 1;
-    return $self->{h} <= $max;
-}
-
-sub draw {
-    my ($self, $x, $y, @p) = @_;
-
-    $y += $self->{h};
-
-    foreach my $e (@{ $self->{elem} }) {
-        $y -= $e->{h};
-        $e->draw($x, $y, @p);
-        $y -= $self->{spc} + $self->{spa};
-    }
-}
-
-#####
-# Механизм растягивания за счёт внутренних интервалов между элементами.
-# Для этого существует поле spa. Но его ещё надо корректно вычислить.
-# У нас может быть строка глубокой вложенности элементов.
-# 
-# 1. рекурсивно вниз считаем суммарное число элементов
-# 2. высчитываем размер одного такого интервала
-# 3. снова рекурсивно устанавливаем одинаковый spa для всех
-#
-# пп 1,3 надо делать только для тех элементов, которые поддерживают
-# рекурсивную установку spa
-package Justified;
-
-sub spacnt {
-    my $self = shift;
-    my $cnt = @{ $self->{elem} } || return 0;
-    $cnt --;
-    foreach my $e (@{ $self->{elem} }) {
-        $e->{elem} || next;
-        $e->can('spacnt') || next;
-        $cnt += $e->spacnt();
-    }
-    return $cnt;
-}
-
-sub spaset {
-    my ($self, $spa) = @_;
-
-    foreach my $e (@{ $self->{elem} }) {
-        $e->{elem} || next;
-        $e->can('spaset') || next;
-        $e->spaset($spa);
-    }
-
-    $self->{spa} = $spa;
-    $self->szupd();
-}
-
-
-# ============================================================
-#
-#       Элементы нового движка - общий каркас
-#
-# ============================================================
-
-package FDocument;
-
-sub new {
-    my $class = shift();
-
-    my $self = bless(
-        {
-            @_,
-            elem    => [],
-        },
-        $class
-    );
-
-    return $self;
-}
-
-sub add {
-    my $self = shift;
-
-    $_->{own} = $self foreach @_;
-    push @{ $self->{elem} }, @_;
-}
-# заглушка, которую будут дёргать нижестоящие элементы
-sub recalc {}
-
-sub draw {
-    my $self = shift;
-
-    $_->draw(@_) foreach @{ $self->{elem} };
-}
-
-
-package FPage;
-use base 'FrameV';
-
-sub new {
-    my ($class, $size, $mleft, $mright, $mtop, $mbottom) = @_;
-
-    $size       ||= 'A4';
-    $mleft      //= 0;
-    $mright     //= $mleft;
-    $mtop       //= $mright;
-    $mbottom    //= $mtop;
-
-    my ($x, $y, $w, $h) = PDF::API2::Page::_to_rectangle($size);
-
-    return $class->SUPER::new(
-        margin  => {
-            left    => $mleft,
-            right   => $mright,
-            top     => $mtop,
-            bottom  => $mbottom
-        },
-        size    => $size,
-        maxw    => $w - $mleft - $mright, 
-        maxh    => $h - $mbottom - $mtop,
-        # расстояние между абзацами
-        spc     => 12,
-    );
-}
-
-sub draw {
-    my ($self, $pdf) = @_;
-    
-    my $page = $pdf->page();
-    $page->size($self->{size});
-    my ($x, $y, $w, $h) = $page->size();
-
-    $y += $h - $self->{margin}->{top};
-
-    my $g = $page->graphics();
-    my ($x1,$y1, $x2,$y2) = ($x+$self->{margin}->{left}, $self->{margin}->{bottom}, $x+$w-$self->{margin}->{right}, $y);
-    $g->move($x1,$y1);
-    $g->hline($x2);
-    $g->vline($y2);
-    $g->hline($x1);
-    $g->vline($y1);
-    $g->stroke();
-
-    $x += $self->{margin}->{left};
-
-    foreach my $e (@{ $self->{elem} }) {
-        $y -= $e->{h};
-        $e->draw($x, $y, $pdf, $page);
-        $y -= $self->{spc} + $self->{spa};
-    }
-}
-
-
-# ============================================================
-#
-#       Парсер строчных элементов
-#
-# ============================================================
-
-package FInlineParser;
-
-sub inadd { shift()->add(@_); }
-
-sub content {
-    my $self = shift;
-
-    foreach my $c (@_) {
-        if (ref($c) eq 'Str') {
-            next if $c->empty(); # попадаются пустые строки с пробелом
-            my $e = FStr->new($self->{style});
-            $self->inadd($e);
-            $e->add($c->{str});
-        }
-        elsif (($c->{type} eq 'bold') || ($c->{type} eq 'italic')) {
-            local $self->{style} = $self->{style}->clone($c->{type} => 1);
-            $self->content(@{ $c->{text} });
-        }
-        elsif ($c->{type} eq 'inlinecode') {
-            my $e = InlineCode->new($self->{style});
-            $self->inadd($e);
-            $e->add($c->{str});
-        }
-        elsif ($c->{type} eq 'href') {
-            my $e = FHref->new($self->{style}, $c->{url});
-            $self->inadd($e);
-            $e->content(@{ $c->{text} });
-        }
-        elsif ($c->{type} eq 'image') {
-            my $img = eval { $self->{style}->{out}->_image($c->{url}) };
-
-            my $e;
-            if ($img) {
-                $e = FImage->new($img, $c->{url}, $c->{title});
-            }
-            elsif ($c->{alt}) {
-                $e = FStr->new($self->{style});
-                $e->add('[' . $c->{alt} . ']');
-            }
-            $self->inadd($e);
-        }
-    }
-}
-
-# ============================================================
-#
-#       Блочные элементы
-#
-# ============================================================
-
-package FContent;
-use base 'FrameV', 'FInlineParser';
-
-sub new {
-    my ($class, $style, $width) = @_;
-    my $self = $class->SUPER::new(
-        style   => $style,
-        spc     => $style->height() * 0.2, # расстояние между строками
-    );
-    $self->{maxw} = $width if defined $width;
-    return $self;
-}
-
-sub lastline {
-    my $self = shift;
-
-    if ($self->empty()) {
-        my $ln = FContentLine->new($self->{style}, $self->{maxw});
-        $self->add($ln);
-        return $ln;
-    }
-
-    my $e = $self->{elem};
-
-    return $e->[@$e - 1];
-}
-
-sub inadd { shift()->lastline()->add(@_); }
-
-sub draw {
-    my ($self, $x, $y, $pdf, $page) = @_;
-
-    my $d = PageDraw->new($page);
-
-    $self->SUPER::draw($x, $y, $pdf, $page, $d);
-}
-
-package FContentLine;
-use base 'FrameH', 'Justified';
-
-sub new {
-    my ($class, $style, $width) = @_;
-    my $self = $class->SUPER::new(
-        spc     => $style->width(' '),
-    );
-    $self->{maxw} = $width if defined $width;
-    return $self;
-}
-
-sub justify {
-    my $self = shift;
-
-    my $max = $self->maxw() // return;
-    my $spacnt = $self->spacnt() || return;
-    $self->spaset(($max - $self->{w}) / $spacnt);
-}
-
-sub fulled {
-    my $self = shift;
-    
-    # В случае полного заполнения себя
-    # нужно себя растянуть по всей ширине
-    $self->justify();
-
-    return $self->SUPER::fulled(@_);
-}
-
-
-# ============================================================
-#
-#       Строчные элементы
-#
-# ============================================================
-
-package FStr;
-use base 'FrameH', 'Justified';
-
-sub new {
-    my ($class, $style) = @_;
-    return $class->SUPER::new(
-        style   => $style,
-        spc     => $style->width(' '),
-    );
-}
-
-sub add {
-    my $self = shift;
-
-    foreach my $s (@_) {
-        my @wrd = split /\s+/, (ref($s) eq 'Str') || (ref($s) eq 'HASH') ? $s->{str} : $s;
-        shift(@wrd) if @wrd && ($wrd[0] eq '');
-        pop(@wrd)   if @wrd && ($wrd[@wrd-1] eq '');
-
-        foreach my $w (@wrd) {
-            $w = {
-                str => $w,
-                w   => $self->{style}->width($w),
-                h   => $self->{style}->height(),
-            };
-        }
-        $self->SUPER::add(@wrd);
-    }
-}
-
-sub draw {
-    my ($self, $x, $y, $pdf, $page, $d) = @_;
-
-    $d->font($self->{style}->font());
-    
-    # Дело в том, что для манипулиции с координатами у нас
-    # в основном только Td. Только первый вызов Td внутри
-    # текстового блока задаёт абсолютные координаты, все
-    # последующие - относительно предыдущего места установки
-    # с помощью того же Td.
-    #
-    # Для строк, которые не надо растягивать на всю ширину это
-    # работает нормально - напечатал строку, перевёл через Td
-    # на следующую. Но это только крайняя строка в абзаце,
-    # по завершении которого мы всё равно закроем блок.
-    #
-    # Но если строчку надо растянуть, это можно нормально сделать
-    # только делая Td после каждого слова (Tw не работает для
-    # юникода).
-    #
-    # Td = position
-    # Tw = wordspace
-    #
-    # Например, экспорт в отечественном office-word в pdf
-    # задаёт для каждого слова свои координаты. Чтобы не пересоздавать
-    # текстовый блок, там перед словом указываются координаты
-    # через команду cm (Modify the current transformation matrix),
-    # и в ней надо задавать аж 6 чисел, только двое из которых -
-    # это координаты.
-
-    if (my $spa = $self->{spa}) { # указано дополнительное расстояние между словами
-        foreach my $e (@{ $self->{elem} }) {
-            $d->text($x, $y - $self->{style}->ulpos(), $e->{str});
-            $x += $e->{w} + $self->{spc} + $spa;
-        }
-    }
-    else {
-        # если текст не надо растягивать, выводим его простой строкой с пробелами
-        $d->text($x, $y - $self->{style}->ulpos(), join(' ', map { $_->{str} } @{ $self->{elem} }));
-    }
-}
-
-package InlineCode;
-use base 'FStr';
-
-sub new {
-    my $self = shift()->SUPER::new(@_);
-    $self->{pad} = $self->{style}->width(' ');
-    return $self;
-}
-
-sub wavail {
-    my $self = shift;
-    my $max = $self->SUPER::wavail(@_) // return;
-    return $max - $self->{pad} * 2;
-}
-
-sub szupd {
-    my $self = shift;
-    $self->SUPER::szupd(@_);
-    $self->{w} += ($self->{pad}||0) * 2;
-}
-
-sub draw {
-    my ($self, $x, $y, $pdf, $page, $d) = @_;
-
-    $d->gfxcol('#aaa');
-    my $yz = $self->{style}->{size} * 0.2 - 1;
-    $d->rrect($x, $y - $yz, $self->{w}, $self->{style}->{size} + $yz*2, 4);
-
-    $self->SUPER::draw($x + $self->{pad}, $y, $pdf, $page, $d);
-}
-
-package FHref;
-use base 'FrameH', 'Justified', 'FInlineParser';
-
-sub new {
-    my ($class, $style, $url) = @_;
-    return $class->SUPER::new(
-        style   => $style,
-        spc     => $style->width(' '),
-        url     => $url,
-    );
-}
-
-sub draw {
-    my ($self, $x, $y, $pdf, $page, $d) = @_;
-
-    $d->gfxcol('#000');
-    my $g = $d->gfx();
-    $g->move($x, $y);
-    $g->hline($x + $self->{w});
-    $g->stroke();
-
-    $self->SUPER::draw($x, $y, $pdf, $page, $d);
-
-    my $an = $page->annotation();
-    $an->rect($x, $y, $x + $self->{w}, $y + $self->{h});
-    $an->uri($self->{url});
-}
-
-package FImage;
-
-sub new {
-    my ($class, $img, $url, $title) = @_;
-
-    my $self = bless(
-        {
-            w   => $img->width(),
-            h   => $img->height(),
-            img => $img,
-            url => $url
-        }
-    );
-    $self->{title} = $title if $title;
-
-    return $self;
-}
-
-sub draw {
-    my ($self, $x, $y, $pdf, $page, $d) = @_;
-
-    $page->object($self->{img}, $x, $y);
-}
-
-
-# ============================================================
-#
-#       Блок-абзацы
-#
-# ============================================================
-
-package FHeader;
-use base 'FContent';
-
-# этот блок неразрывный, поэтому не даём себя разрезать на части в recalc,
-# сразу перенаправляем этот запрос выше
-sub recalc {
-    my $self = shift();
-
-    $self->szupd();
-
-    my $own = $self->{own} || return;
-    $own->recalc();
-
-    # Но задача усложняется ещё и тем, что нам надо не просто поместиться
-    # на странице, но ещё чтобы после нас поместилась хотябы одна строчка.
-    # Проверяем в самом ли конце списка родителя мы
-    return if $own->empty() || ($own->{elem}->[ @{ $own->{elem} } - 1 ] ne $self);
-    # Смотрим, сколько ещё места осталось у родителя, вместе с нами:
-    return if $own->havail() > $own->{spc} + 15;
-
-    # вырезаем себя у родителя (текущей страницы)
-    pop @{ $own->{elem} };
-    # просим страницу передобавиться и возвращаем себя
-    $own->fulled($self);
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # ============================================================
 #
@@ -2242,6 +1468,12 @@ sub recalc {
     отрисовки: $pdf, $page ... и т.д.
 
 =cut
+
+# ============================================================
+#
+#       Базовые узлы (основной функционал движка)
+#
+# ============================================================
 
 package DNode;
 
@@ -2455,9 +1687,9 @@ sub stage3layout {
     return $chg;
 }
 
-sub draw {
+sub stage4draw {
     my $self = shift;
-    $_->draw(@_) foreach @{ $self->{chld} };
+    $_->stage4draw(@_) foreach @{ $self->{chld} };
 }
 
 
@@ -2467,11 +1699,11 @@ use base 'DNode';
 sub szchld  { shift()->_szchld('w', 'h'); }
 sub restw   { shift()->_rest  ('w', @_); }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, @p) = @_;
 
     foreach my $c (@{ $self->{chld} }) {
-        $c->draw($x, @p);
+        $c->stage4draw($x, @p);
         $x += $c->{w} + $self->{spc} + $self->{spa};
     }
 }
@@ -2483,18 +1715,24 @@ use base 'DNode';
 sub szchld  { shift()->_szchld('h', 'w'); }
 sub resth   { shift()->_rest  ('h', @_); }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, @p) = @_;
 
     $y += $self->{h};
 
     foreach my $c (@{ $self->{chld} }) {
         $y -= $c->{h};
-        $c->draw($x, $y, @p);
+        $c->stage4draw($x, $y, @p);
         $y -= $self->{spc} + $self->{spa};
     }
 }
 
+
+# ============================================================
+#
+#       Вспомогательный доп-классы (инструменты)
+#
+# ============================================================
 
 #####
 # Механизм растягивания за счёт внутренних интервалов между элементами.
@@ -2582,6 +1820,13 @@ sub content {
 
 
 
+
+# ============================================================
+#
+#       Структура документа
+#
+# ============================================================
+
 package DDocument;
 use base 'DNodeV';
 
@@ -2616,7 +1861,7 @@ sub stage3layout {
     $self->SUPER::stage3layout($w, $h);
 }
 
-sub draw {
+sub stage4draw {
     my ($self, $pdf) = @_;
     
     my $page = $pdf->page();
@@ -2634,7 +1879,7 @@ sub draw {
     my $y = $g->{y} + $g->{h};
     foreach my $c (@{ $self->{chld} }) {
         $y -= $c->{h};
-        $c->draw($g->{x}, $y, $page, $pdf);
+        $c->stage4draw($g->{x}, $y, $page, $pdf);
         $y -= $self->{spc} + $self->{spa};
     }
 }
@@ -2656,12 +1901,12 @@ sub stage2size {
     $self->SUPER::stage2size($p, @p);
 }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, $page, $pdf) = @_;
 
     my $d = PageDraw->new($page);
 
-    $self->SUPER::draw($x, $y, $d, $page, $pdf);
+    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf);
 }
 
 # в laynode приходят два размера: $w, $h - это границы
@@ -2712,6 +1957,15 @@ sub restw {
 }
 
 
+
+
+
+# ============================================================
+#
+#       Части строк (горизонтальные элементы)
+#
+# ============================================================
+
 package DStr;
 use base 'DNodeH', 'DJustify';
 
@@ -2751,7 +2005,7 @@ sub stage2size {
     $self->{ulpos}  = $p->{style}->ulpos();
 }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, $d) = @_;
 
     $d->font(@{ $self->{font} });
@@ -2831,13 +2085,13 @@ sub stage2size {
     $self->SUPER::stage2size($p, @p);
 }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, $d, @p) = @_;
 
     $d->gfxcol('#aaa');
     $d->rrect($x, $y - $self->{yz}, $self->{w}, $self->{fsz} + $self->{yz}*2, 4);
 
-    $self->SUPER::draw($x + $self->{pad}, $y, $d, @p);
+    $self->SUPER::stage4draw($x + $self->{pad}, $y, $d, @p);
 }
 
 package DHref;
@@ -2858,7 +2112,7 @@ sub stage2size {
     $self->SUPER::stage2size($p, @p);
 }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, $d, $page, @p) = @_;
 
     $d->gfxcol('#000');
@@ -2867,7 +2121,7 @@ sub draw {
     $g->hline($x + $self->{w});
     $g->stroke();
 
-    $self->SUPER::draw($x, $y, $d, $page, @p);
+    $self->SUPER::stage4draw($x, $y, $d, $page, @p);
 
     my $an = $page->annotation();
     $an->rect($x, $y, $x + $self->{w}, $y + $self->{h});
@@ -2907,16 +2161,26 @@ sub stage2size {
 
 sub stage3layout {}
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, $d, $page, @p) = @_;
 
     if ($self->{img}) {
         $page->object($self->{img}, $x, $y);
     }
     elsif ($self->{alt}) {
-        $self->{alt}->draw($x, $y, $d, $page, @p);
+        $self->{alt}->stage4draw($x, $y, $d, $page, @p);
     }
 }
+
+
+
+
+
+# ============================================================
+#
+#       Блочные элементы страницы
+#
+# ============================================================
 
 
 package DHeader;
@@ -3005,7 +2269,7 @@ sub stage3layout {
     $self->SUPER::stage3layout($w, @p);
 }
 
-sub draw {
+sub stage4draw {
     my ($self, $x, $y, $page) = @_;
 
     my $d = PageDraw->new($page);
