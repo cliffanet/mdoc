@@ -414,6 +414,20 @@ sub header {
     $self->{ctx}->add( $c );
 }
 
+sub code {
+    # для code хорошо бы сделать парсинг кода,
+    # но пока просто доблируем работу textblock
+    textblock(@_);
+}
+
+sub textblock {
+    my ($self, %p) = @_;
+    
+    my $c = DTextBlock->new(@{ $p{ text } });
+    $self->{ctx}->add( $c );
+
+}
+
 sub paragraph {
     my ($self, %p) = @_;
 
@@ -2703,6 +2717,12 @@ use base 'DNodeH', 'DJustify';
 
 sub new {
     my $self = shift()->SUPER::new();
+    $self->addwrd(@_);
+    return $self;
+}
+
+sub addwrd {
+    my $self = shift;
 
     foreach my $s (@_) {
         my @wrd = split /\s+/, (ref($s) eq 'Str') || (ref($s) eq 'HASH') ? $s->{str} : $s;
@@ -2711,8 +2731,6 @@ sub new {
 
         $self->add(map { { str => $_ } } @wrd);
     }
-
-    return $self;
 }
 
 sub stage2size {
@@ -2927,5 +2945,89 @@ sub stage2size {
 }
 
 sub resth {} # вертикальная неразрывность содержимого
+
+package DTextBlock;
+use base 'DNodeV';
+
+sub new {
+    my $self = shift()->SUPER::new();
+    $self->addstr(@_);
+    return $self;
+}
+
+sub addstr {
+    my $self = shift;
+
+    $self->add(
+        map {
+            {
+                str => (ref eq 'Str') || (ref eq 'HASH') ? $_->{str} : $_
+            }
+        } @_
+    );
+}
+
+sub szchld {
+    my $self = shift;
+    $self->SUPER::szchld(@_);
+    $self->{w} += ($self->{padw}||0) * 2;
+    $self->{h} += ($self->{padw}||0) * 2;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    my $style = $p->{style}->clone(font => 'PTMonoBold.ttf');
+
+    $self->{font}   = [ $style->font() ];
+    $self->{ulpos}  = $style->ulpos();
+
+    $self->{padw} = $style->width(' ');
+    $self->{padh} = $style->height() * 0.7;
+    $self->{spc} = $style->height() * 0.2;
+    $self->{spa} = 0;
+    $self->{yz} = $style->height() * 0.2;
+
+    my $h = $p->{style}->height();
+    foreach my $c (@{ $self->{chld} }) {
+        $c->{w} = $style->width($c->{str});
+        $c->{h} = $h;
+    }
+
+    $self->szchld();
+}
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $self->{cntw} = $w;
+
+    $self->SUPER::stage3layout($w, @p);
+}
+
+sub draw {
+    my ($self, $x, $y, $page) = @_;
+
+    my $d = PageDraw->new($page);
+
+    $d->gfxcol('#888');
+    $d->rrect($x, $y, $self->{cntw}, $self->{h}, 4);
+
+    $x += $self->{padw};
+    $y += $self->{h} - $self->{padh} + $self->{yz};
+
+    $d->font(@{ $self->{font} });
+    my $t = $d->_text();
+    $t->fill_color('#fff');
+
+    foreach my $c (@{ $self->{chld} }) {
+        $y -= $c->{h};
+        $d->text($x, $y - $self->{ulpos}, $c->{str});
+        $y -= $self->{spc} + $self->{spa};
+    }
+
+    $t->fill_color('#000');
+}
+
 
 1;
