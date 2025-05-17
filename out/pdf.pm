@@ -187,7 +187,7 @@ sub new {
     $self->{doc}->add($self->{context});
 
 
-    $self->{ddoc} = DNode->new();
+    $self->{ddoc} = DDocument->new();
     $self->{ctx} = DPage->new();
     $self->{ddoc}->add($self->{ctx});
     # после переезда на этот движок, надо будет
@@ -208,12 +208,12 @@ sub data {
 
     # Теперь нам надо выполнить второй этап - распределить
     # элементы по пространству на документе, страницах и т.д.
-    $self->{ddoc}->szfull($self);
+    $self->{ddoc}->stage2size($self);
 
     # Теперь распределяем согласно нашим размерам.
     # Сверху до уровня страниц нам надо передать размерность страницы
     # и размеры всех полей.
-    $self->{ddoc}->layout('A4', %{ $self->{margin} });
+    $self->{ddoc}->stage3layout('A4', %{ $self->{margin} });
 
     # И, наконец, выводим содержимое
     $self->{ddoc}->draw( $self->{pdf} );
@@ -402,21 +402,24 @@ sub paragraph {
 sub header {
     my ($self, %p) = @_;
 
-    my @size = ( 22, 18, 14, 12, 11 );
-    my $sz = ($p{deep} > 0) && ($p{deep} <= @size) ? $size[ $p{deep}-1 ] : $size[ @size-1 ];
-    my $style = SStyle->new($self, bold => 1, size => $sz);
+    #my @size = ( 22, 18, 14, 12, 11 );
+    #my $sz = ($p{deep} > 0) && ($p{deep} <= @size) ? $size[ $p{deep}-1 ] : $size[ @size-1 ];
+    #my $style = SStyle->new($self, bold => 1, size => $sz);
 
-    my $c = FHeader->new($style, $self->{context}->{maxw});
-    $self->{context}->add($c);
-    $c->content(@{ $p{ content } });
+    #my $c = FHeader->new($style, $self->{context}->{maxw});
+    #$self->{context}->add($c);
+    #$c->content(@{ $p{ content } });
+
+    my $c = DHeader->new($p{deep}, @{ $p{ content } });
+    $self->{ctx}->add( $c );
 }
 
 sub paragraph {
     my ($self, %p) = @_;
 
-    my $c = FContent->new(SStyle->new($self), $self->{context}->{maxw});
-    $self->{context}->add($c);
-    $c->content(@{ $p{ content } });
+    #my $c = FContent->new(SStyle->new($self), $self->{context}->{maxw});
+    #$self->{context}->add($c);
+    #$c->content(@{ $p{ content } });
 
     my $c = DContent->new(@{ $p{ content } });
     $self->{ctx}->add( $c );
@@ -2190,11 +2193,11 @@ sub recalc {
     
     3. Распределение пространства.
 
-        Начиная с самого верхнего уровня мы вызываем метод layout,
+        Начиная с самого верхнего уровня мы вызываем метод stage3layout,
         в который передадим:
 
         - допустимые границы, в которые необходимо уместиться
-        - ссылку на процедуры, которые позволят внутри layout
+        - ссылку на процедуры, которые позволят внутри stage3layout
         определить, что делать, если в допустимые границы
         мы не влазим.
 
@@ -2265,12 +2268,12 @@ sub _szchld {
     $self->{$fs} += ($self->{spc} + $self->{spa}) * ($wcnt-1) if $wcnt;
 }
 
-sub szfull {
+sub stage2size {
     my $self = shift;
     # метод для рекурсивного обновления всего дерева с одинаковым
     # набором аргументов. Самые нижние узлы, у которых нет или
     # не может быть вложенных элементов, должны обновить только свой размер.
-    $_->szfull(@_) foreach @{ $self->{chld} || [] };
+    $_->stage2size(@_) foreach @{ $self->{chld} || [] };
 
     $self->{spc} ||= 0;
     $self->{spa} = 0;
@@ -2363,7 +2366,7 @@ sub _laynode {
     # Поэтому внутри FContent необходимо определить метод:
     # sub laynode { shift()->_laynode('w', $_[0]); }
     #
-    # В результате, ответвление от layout внутри FContent выполнит вмещение
+    # В результате, ответвление от stage3layout внутри FContent выполнит вмещение
     # в горизонтальный размер $w всех более глубоких уровней. Он порежет
     # горизонтальные строчки в нужных местах, сместив их вниз. После этого,
     # у всех нижестоящих элементов зафиксируется их высота, и можно будет
@@ -2415,7 +2418,7 @@ sub _laynode {
         # и их надо обновить выше
 }
 
-sub layout {
+sub stage3layout {
     my $self = shift;
     # этот метод нужен, чтобы рекурсивно вниз ко всем нижестоящим уровням
     # передать границы области, в которую необходимо поместиться.
@@ -2431,10 +2434,10 @@ sub layout {
     my $chg = 0;
     foreach my $c (@{ $self->{chld} || [] }) {
         next if !ref($c) || (ref($c) eq 'HASH');
-        $chg ++ if $c->layout(@_);
+        $chg ++ if $c->stage3layout(@_);
     }
-    $chg ++ if $self->laynode(@_);
     $self->szchld() if $chg;
+    $chg ++ if $self->laynode(@_);
     return $chg;
 }
 
@@ -2531,57 +2534,100 @@ sub justify {
     $self->spaset(($sz - $self->{w}) / $spacnt);
 }
 
+package DParserH;
+
+sub toline { shift()->add(@_); }
+
+sub content {
+    my $self = shift;
+
+    foreach my $c (@_) {
+        if (ref($c) eq 'Str') {
+            my $s = DStr->new($c->{str});
+            # попадаются пустые строки, их наличие будет
+            # мешать корректному распределению пробелов
+            # между словами в строках, состоящих из смешанных
+            # элементов.
+            next if $s->empty();
+            $self->toline($s);
+        }
+        elsif (($c->{type} eq 'bold') || ($c->{type} eq 'italic')) {
+            $self->toline( DContentStyle->new($c->{type}, @{ $c->{text} }) );
+        }
+        elsif ($c->{type} eq 'inlinecode') {
+            $self->toline( DICode->new($c->{str}) );
+        }
+        elsif ($c->{type} eq 'href') {
+            $self->toline( DHref->new($c->{url}, @{ $c->{text} }) );
+        }
+        elsif ($c->{type} eq 'image') {
+            $self->toline( DImage->new($c->{url}, $c->{title}, $c->{alt}) );
+        }
+    }
+}
+
 
 
 package DDocument;
-use base 'DNode';
+use base 'DNodeV';
+
+sub stage3layout {
+    my ($self, $size, %m) = @_;
+
+    my ($x, $y, $w, $h) = PDF::API2::Page::_to_rectangle($size);
+    my %geom = (
+        size=> $size,
+        x   => $x + ($m{left}||0),
+        y   => $y + ($m{bottom}||0),
+        w   => $w - ($m{left}||0) - ($m{right}||0),
+        h   => $h - ($m{top}||0) - ($m{bottom}||0),
+    );
+
+    # тут надо продублировать $geom{w}, $geom{h} вначале,
+    # чтобы они попали в нужном составе в laynode
+    $self->SUPER::stage3layout($geom{w}, $geom{h}, %geom);
+}
+
+sub laynode { shift()->_laynode('h', $_[1]); }
 
 package DPage;
 use base 'DNodeV';
 
-sub layout {
-    my ($self, $size, %m) = @_;
+sub stage3layout {
+    my ($self, $w, $h, %g) = @_;
 
-    my ($x, $y, $w, $h) = PDF::API2::Page::_to_rectangle($size);
-
-    $self->{size}   = $size;
-    $self->{x}      = $x + ($m{left}||0);
-    $self->{y}      = $y + ($m{bottom}||0);
-    $self->{w}      = $w - ($m{left}||0) - ($m{right}||0);
-    $self->{h}      = $h - ($m{top}||0) - ($m{bottom}||0);
-
+    $self->{geom}   = { %g };
     $self->{spc}    = 12;
 
-    $self->SUPER::layout($self->{w}, $self->{h});
+    $self->SUPER::stage3layout($w, $h);
 }
-
-# размеры страницы не обновляем, там останутся реальные границы полей
-sub szchld {}
 
 sub draw {
     my ($self, $pdf) = @_;
     
     my $page = $pdf->page();
-    $page->size($self->{size});
+    my $g = $self->{geom};
+    $page->size($g->{size});
 
-    my $g = $page->graphics();
-    $g->move($self->{x}, $self->{y});
-    $g->hline($self->{x} + $self->{w});
-    $g->vline($self->{y} + $self->{h});
-    $g->hline($self->{x});
-    $g->vline($self->{y});
-    $g->stroke();
+    my $gfx = $page->graphics();
+    $gfx->move($g->{x}, $g->{y});
+    $gfx->hline($g->{x} + $g->{w});
+    $gfx->vline($g->{y} + $g->{h});
+    $gfx->hline($g->{x});
+    $gfx->vline($g->{y});
+    $gfx->stroke();
 
-    my $y = $self->{y} + $self->{h};
+    my $y = $g->{y} + $g->{h};
     foreach my $c (@{ $self->{chld} }) {
         $y -= $c->{h};
-        $c->draw($self->{x}, $y, $page, $pdf);
+        $c->draw($g->{x}, $y, $page, $pdf);
         $y -= $self->{spc} + $self->{spa};
     }
 }
 
+
 package DContent;
-use base 'DNodeV';
+use base 'DNodeV', 'DParserH';
 
 sub new {
     my $self = shift()->SUPER::new();
@@ -2589,12 +2635,11 @@ sub new {
     return $self;
 }
 
-sub szfull {
-    my $self = shift;
-    my ($p) = @_;
+sub stage2size {
+    my ($self, $p, @p) = @_;
 
     $self->{spc} = $p->{style}->height() * 0.2;
-    $self->SUPER::szfull(@_);
+    $self->SUPER::stage2size($p, @p);
 }
 
 sub draw {
@@ -2625,31 +2670,15 @@ sub toline {
     return $ln->add(@_);
 }
 
-sub content {
-    my $self = shift;
-
-    foreach my $c (@_) {
-        if (ref($c) eq 'Str') {
-            my $s = DStr->new($c->{str});
-            # попадаются пустые строки, их наличие будет
-            # мешать корректному распределению пробелов
-            # между словами в строках, состоящих из смешанных
-            # элементов.
-            next if $s->empty();
-            $self->toline($s);
-        }
-    }
-}
 
 package DLine;
 use base 'DNodeH', 'DJustify';
 
-sub szfull {
-    my $self = shift;
-    my ($p) = @_;
+sub stage2size {
+    my ($self, $p, @p) = @_;
 
     $self->{spc} = $p->{style}->width(' ');
-    $self->SUPER::szfull(@_);
+    $self->SUPER::stage2size($p, @p);
 }
 
 # активация justify для всей строки,
@@ -2686,7 +2715,7 @@ sub new {
     return $self;
 }
 
-sub szfull {
+sub stage2size {
     my ($self, $p) = @_;
 
     my $h = $p->{style}->height();
@@ -2745,5 +2774,158 @@ sub draw {
         $d->text($x, $y - $self->{ulpos}, join(' ', map { $_->{str} } @{ $self->{chld} }));
     }
 }
+
+package DContentStyle;
+use base 'DNodeH', 'DJustify', 'DParserH';
+
+sub new {
+    my $self = shift()->SUPER::new();
+    $self->{style} = shift();
+    $self->content(@_);
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    local $p->{style} = $p->{style}->clone($self->{style} => 1);
+    $self->{spc} = $p->{style}->width(' ');
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+package DICode;
+use base 'DStr';
+
+sub szchld {
+    my $self = shift;
+    $self->SUPER::szchld(@_);
+    $self->{w} += ($self->{pad}||0) * 2;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{pad} = $p->{style}->width(' ');
+    $self->{fsz} = $p->{style}->height();
+    $self->{yz} = $p->{style}->height() * 0.2 - 1;
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub draw {
+    my ($self, $x, $y, $d, @p) = @_;
+
+    $d->gfxcol('#aaa');
+    $d->rrect($x, $y - $self->{yz}, $self->{w}, $self->{fsz} + $self->{yz}*2, 4);
+
+    $self->SUPER::draw($x + $self->{pad}, $y, $d, @p);
+}
+
+package DHref;
+use base 'DNodeH', 'DJustify', 'DParserH';
+
+sub new {
+    my $self = shift()->SUPER::new();
+    $self->{url} = shift();
+    $self->content(@_);
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{spc} = $p->{style}->width(' ');
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub draw {
+    my ($self, $x, $y, $d, $page, @p) = @_;
+
+    $d->gfxcol('#000');
+    my $g = $d->gfx();
+    $g->move($x, $y);
+    $g->hline($x + $self->{w});
+    $g->stroke();
+
+    $self->SUPER::draw($x, $y, $d, $page, @p);
+
+    my $an = $page->annotation();
+    $an->rect($x, $y, $x + $self->{w}, $y + $self->{h});
+    $an->uri($self->{url});
+}
+
+package DImage;
+
+sub new {
+    my ($class, $url, $title, $alt) = @_;
+
+    my $self = bless({ url => $url }, $class);
+    $self->{title} = $title if $title;
+    $self->{alt} = DStr->new('[' . $alt . ']') if $alt;
+
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    eval { $self->{img} = $p->_image($self->{url}) };
+    if (my $img = $self->{img}) {
+        $self->{w} = $img->width();
+        $self->{h} = $img->height();
+    }
+    elsif (my $alt = $self->{alt}) {
+        $alt->stage2size($p, @p);
+        $self->{w} = $alt->{w};
+        $self->{h} = $alt->{h};
+    }
+    else {
+        $self->{w} = 0;
+        $self->{h} = 0;
+    }
+}
+
+sub stage3layout {}
+
+sub draw {
+    my ($self, $x, $y, $d, $page, @p) = @_;
+
+    if ($self->{img}) {
+        $page->object($self->{img}, $x, $y);
+    }
+    elsif ($self->{alt}) {
+        $self->{alt}->draw($x, $y, $d, $page, @p);
+    }
+}
+
+
+package DHeader;
+use base 'DContent';
+
+sub new {
+    my $class = shift;
+    my $deep = shift;
+
+    my $self = $class->SUPER::new(@_);
+    $self->{deep} = $deep;
+
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    my @size = ( 22, 18, 14, 12, 11 );
+    my $sz = ($self->{deep} > 0) && ($self->{deep} <= @size) ? $size[ $self->{deep} - 1 ] : $size[ @size-1 ];
+
+    local $p->{style} = $p->{style}->clone(bold => 1, size => $sz);
+    $self->{spc} = $p->{style}->width(' ');
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub resth {} # вертикальная неразрывность содержимого
 
 1;
