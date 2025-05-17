@@ -95,6 +95,15 @@ sub _image {
     return $imgall->{$fname} ||= $self->{pdf}->image($fname);
 }
 
+sub modifier {
+    my ($self, %p) = @_;
+
+    if ($p{name} eq 'pagebreak') {
+        return if (ref($self->{ctx}) ne 'DPage') || $self->{ctx}->empty();
+        $self->{ctx} = DPage->new();
+        $self->{doc}->add($self->{ctx});
+    }
+}
 
 sub header {
     my ($self, %p) = @_;
@@ -125,6 +134,17 @@ sub quote {
 
     local $self->{ctx} = $c;
     $self->make(@{ $p{ content } });
+}
+
+sub listitem {
+    my ($self, %p) = @_;
+
+    my $c = DListItem->new($p{mode} eq 'ord' ? int($p{num}) . '.' : ' ' . $p{mode});
+    $self->{ctx}->add( $c );
+
+    local $self->{ctx} = $c;
+    $self->paragraph(content => $p{title});
+    $self->make(@{ $p{ content } }) if $p{ content };
 }
 
 sub paragraph {
@@ -1215,11 +1235,17 @@ sub stage4draw {
 package DQuote;
 use base 'DNodeV';
 
-sub stage3layout {
-    my ($self, $w, @p) = @_;
+sub stage2size {
+    my ($self, $p, @p) = @_;
 
     $self->{spc}    = 12;
-    $self->{pad}    = 15;
+    $self->{pad}    = 12;
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
 
     $self->SUPER::stage3layout($w - $self->{pad}, @p);
 }
@@ -1229,13 +1255,60 @@ sub stage4draw {
 
     my $gfx = $page->graphics();
     $gfx->move($x, $y);
-    $gfx->hline($x + 5);
     $gfx->vline($y + $self->{h});
-    $gfx->hline($x);
-    $gfx->vline($y);
-    $gfx->paint();
+    $gfx->stroke();
+    $gfx->move($x+2, $y);
+    $gfx->vline($y + $self->{h});
+    $gfx->stroke();
+    $gfx->move($x+4, $y);
+    $gfx->vline($y + $self->{h});
+    $gfx->stroke();
 
     $self->SUPER::stage4draw($x + $self->{pad}, $y, $page);
 }
+
+
+
+package DListItem;
+use base 'DNodeV';
+
+sub new {
+    my $self = shift()->SUPER::new();
+    $self->{num} = shift();
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{spc}    = 12;
+    $self->{pad}    = 20;
+    $self->{nw}     = $p->{style}->width($self->{num} . ' ');
+    $self->{font}   = [ $p->{style}->font() ];
+    $self->{ulpos}  = $p->{style}->ulpos();
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $self->SUPER::stage3layout($w - $self->{pad}, @p);
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $page) = @_;
+
+    my $d = PageDraw->new($page);
+    $d->font(@{ $self->{font} });
+    $d->text(
+        $x + $self->{pad} - $self->{nw},
+        $y + $self->{h} - $self->{font}->[1] - $self->{ulpos},
+        $self->{num}
+    );
+
+    $self->SUPER::stage4draw($x + $self->{pad}, $y, $page);
+}
+
 
 1;
