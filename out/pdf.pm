@@ -393,6 +393,16 @@ sub textblock {
 
 }
 
+sub quote {
+    my ($self, %p) = @_;
+
+    my $c = DQuote->new();
+    $self->{ctx}->add( $c );
+
+    local $self->{ctx} = $c;
+    $self->make(@{ $p{ content } });
+}
+
 sub paragraph {
     my ($self, %p) = @_;
 
@@ -2293,5 +2303,32 @@ sub stage4draw {
     $t->fill_color('#000');
 }
 
+
+
+package DQuote;
+use base 'DNodeV';
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $self->{spc}    = 12;
+    $self->{pad}    = 15;
+
+    $self->SUPER::stage3layout($w - $self->{pad}, @p);
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $page) = @_;
+
+    my $gfx = $page->graphics();
+    $gfx->move($x, $y);
+    $gfx->hline($x + 5);
+    $gfx->vline($y + $self->{h});
+    $gfx->hline($x);
+    $gfx->vline($y);
+    $gfx->paint();
+
+    $self->SUPER::stage4draw($x + $self->{pad}, $y, $page);
+}
 
 1;
