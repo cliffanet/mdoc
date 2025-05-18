@@ -161,6 +161,18 @@ sub paragraph {
     $self->{ctx}->add( $c );
 }
 
+sub table {
+    my ($self, %p) = @_;
+
+    my $tbl = DTable->new($p{mode}, $p{width}, $p{align});
+    $self->{ctx}->add( $tbl );
+
+    $tbl->addhdr(@{ $p{hdr} }) if @{ $p{hdr}||[] };
+    $tbl->addrow(@$_) foreach @{ $p{row}||[] };
+}
+
+
+
 # ============================================================
 # ============================================================
 #
@@ -870,15 +882,20 @@ sub stage2size {
     my ($self, $p, @p) = @_;
 
     $self->{spc} = $p->{style}->height() * 0.2;
+
+    if (my $al = $self->{align}) {
+        $_->{align} = $al foreach @{ $self->{chld} };
+    }
+
     $self->SUPER::stage2size($p, @p);
 }
 
 sub stage4draw {
-    my ($self, $x, $y, $page, $pdf) = @_;
+    my ($self, $x, $y, $page, @p) = @_;
 
     my $d = PageDraw->new($page);
 
-    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf);
+    $self->SUPER::stage4draw($x, $y, $d, $page, @p);
 }
 
 # в laynode приходят два размера: $w, $h - это границы
@@ -926,8 +943,31 @@ sub restw {
     my $over = $self->SUPER::restw(@_) || return;
     @$over || return $over; # строка вся влезла
 
+    delete $self->{align};
     $self->justify($sz);
     return $over;
+}
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $self->{ctxw} = $w;
+
+    $self->SUPER::stage3layout($w, @p);
+}
+
+sub stage4draw {
+    my ($self, $x, @p) = @_;
+
+    # механизм горизонтального выравнивания строки
+    if (($self->{align}||'') eq 'r') {
+        $x += $self->{ctxw} - $self->{w};
+    }
+    elsif (($self->{align}||'') eq 'c') {
+        $x += ($self->{ctxw} - $self->{w}) / 2;
+    }
+
+    $self->SUPER::stage4draw($x, @p);
 }
 
 
@@ -1030,8 +1070,9 @@ package DContentStyle;
 use base 'DNodeH', 'DJustify', 'DParserH';
 
 sub new {
-    my $self = shift()->SUPER::new();
-    $self->{style} = shift();
+    my $self = shift()->SUPER::new(
+        style => shift()
+    );
     $self->content(@_);
     return $self;
 }
@@ -1083,8 +1124,9 @@ package DHref;
 use base 'DNodeH', 'DJustify', 'DParserH';
 
 sub new {
-    my $self = shift()->SUPER::new();
-    $self->{url} = shift();
+    my $self = shift()->SUPER::new(
+        url => shift()
+    );
     $self->content(@_);
     return $self;
 }
@@ -1355,7 +1397,7 @@ sub stage3layout {
 }
 
 sub stage4draw {
-    my ($self, $x, $y, $page) = @_;
+    my ($self, $x, $y, $page, @p) = @_;
 
     my $gfx = $page->graphics();
     $gfx->move($x, $y);
@@ -1368,7 +1410,7 @@ sub stage4draw {
     $gfx->vline($y + $self->{h});
     $gfx->stroke();
 
-    $self->SUPER::stage4draw($x + $self->{pad}, $y, $page);
+    $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
 }
 
 
@@ -1378,9 +1420,9 @@ package DListItem;
 use base 'DNodeV';
 
 sub new {
-    my $self = shift()->SUPER::new();
-    $self->{num} = shift();
-    return $self;
+    return shift()->SUPER::new(
+        num => shift()
+    );
 }
 
 sub stage2size {
@@ -1402,7 +1444,7 @@ sub stage3layout {
 }
 
 sub stage4draw {
-    my ($self, $x, $y, $page) = @_;
+    my ($self, $x, $y, $page, @p) = @_;
 
     my $d = PageDraw->new($page);
     $d->font(@{ $self->{font} });
@@ -1412,8 +1454,224 @@ sub stage4draw {
         $self->{num}
     );
 
-    $self->SUPER::stage4draw($x + $self->{pad}, $y, $page);
+    $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
 }
 
+
+
+
+
+# ============================================================
+# ============================================================
+#
+#       Таблица
+#
+# ============================================================
+# ============================================================
+
+package DTable;
+use base 'DNodeV';
+
+sub new {
+    my $self = shift()->SUPER::new(
+        mode    => shift(),
+        colw    => shift()||[],     # ширина столбцов
+        cols    => 0,               # суммарная ширина всех столбцов
+        cola    => shift()||[],     # горизонтальное выравнивание в столбцах
+    );
+
+    $self->{cols} += $_ foreach @{ $self->{colw} };
+
+    return $self;
+}
+
+sub _addrow {
+    my ($self, $class, @col) = @_;
+    $self->add( $class->new($self, @col) );
+}
+
+sub addhdr { shift()->_addrow(DTblHdr => @_); }
+sub addrow { shift()->_addrow(DTblRow => @_); }
+
+sub szchld {
+    my $self = shift;
+
+    $self->SUPER::szchld();
+    $self->{h} += $self->{padv} * 2;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{spc}    = $self->{mode} == 1 ? 0 : 5;
+    $self->{padv}   = $self->{mode} == 1 ? 0 : 5; # расстояние до верхней и нижней границ таблицы.
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $self->{ctxw} = $w;
+
+    $self->SUPER::stage3layout($w, @p);
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $page, @p) = @_;
+
+    my $g = $page->graphics();
+    $g->move($x, $y);
+    $g->hline($x + $self->{ctxw});  # использование своей ширины не очень подходит,
+                                    # т.к. ширина колонок делается принудительно
+                                    # в отношениях к общей ширине, получаются дроби
+                                    # суммарная размерность оказывается неточной
+                                    # и из-за погрешности может оказаться как уже,
+                                    # так и шире на пару пикселей.
+    if ($self->{mode} == 1) {
+        $g->vline($y + $self->{h});
+        $g->hline($x);
+        $g->vline($y);
+    }
+    else {
+        $g->stroke();
+        $g->move($x, $y + $self->{h});
+        $g->hline($x + $self->{ctxw});
+    }
+    $g->stroke();
+
+    if (($self->{mode} == 1) && !$self->empty()) {
+        my @w = @{ $self->{colw} };
+        my $x1 = $x + ($self->{ctxw} * shift(@w) / $self->{cols});
+        foreach my $w (@w) {
+            $g->move($x1-1, $y);
+            $g->vline($y + $self->{h});
+            $g->stroke();
+            $x1 += $self->{ctxw} * $w / $self->{cols};
+        }
+
+        my @r = @{ $self->{chld} };
+        my $y1 = $y + $self->{h} - shift(@r)->{h};
+        foreach my $r (@r) {
+            $g->move($x, $y1);
+            $g->hline($x + $self->{ctxw});
+            $g->stroke();
+            $y1 -= $r->{h};
+        }
+    }
+
+    $self->SUPER::stage4draw($x, $y - $self->{padv}, $page, @p);
+}
+
+
+# ============================================================
+# ============================================================
+package DTblRow;
+use base 'DNodeH';
+
+sub new {
+    my ($class, $tbl, @col) = @_;
+    my $self = $class->SUPER::new(
+        mode    => $tbl->{mode},
+        colw    => $tbl->{colw},    # ширина столбцов
+        cols    => $tbl->{cols},    # суммарная ширина всех столбцов
+        cola    => $tbl->{cola},    # горизонтальное выравнивание в столбцах
+    );
+
+    $self->addcol(@$_) foreach @col;
+
+    return $self;
+}
+
+sub addcol {
+    my $self = shift;
+
+    my $n = @{ $self->{chld} };
+    $self->add( DTblCol->new($self->{colw}->[$n], $self->{cols}, $self->{cola}->[$n], @_) );
+}
+
+sub szchld {
+    my $self = shift;
+
+    $self->SUPER::szchld();
+    $_->{rowh} = $self->{h} foreach @{ $self->{chld} };
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{spc}    = $self->{mode} == 1 ? $p->{style}->height() * 0.2 : 0;
+    my $n = @{ $self->{chld} };
+    if ($n && ($self->{mode} > 1)) {
+        $self->{chld}->[0]->{padl} = 0;
+        $self->{chld}->[$n-1]->{padr} = 0;
+    }
+    foreach my $c (@{ $self->{chld} }) {
+        $c->{padl} //= 5;
+        $c->{padr} //= 5;
+        $c->{padv} = $self->{mode} == 1 ? 5 : 0;
+    }
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+
+# ============================================================
+# ============================================================
+package DTblHdr;
+use base 'DTblRow';
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    local $p->{style} = $p->{style}->clone(bold => 1);
+
+    $self->SUPER::stage2size($p, @p);
+}
+
+
+# ============================================================
+# ============================================================
+package DTblCol;
+use base 'DContent';
+
+sub new {
+    my $self = shift()->SUPER::new();
+    $self->{colw} = shift();    # ширина этого столбца
+    $self->{cols} = shift();    # суммарная ширина всех столбцов
+    $self->{align}= shift();    # горизонтальное выравнивание этого столбца
+
+    $self->content(@_);
+
+    return $self;
+}
+
+sub szchld {
+    my $self = shift;
+
+    $self->SUPER::szchld();
+    $self->{w} += $self->{padl} + $self->{padr};
+    $self->{h} += $self->{padv} * 2;
+}
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $w = ($w - $self->{padl} - $self->{padr}) * $self->{colw} / $self->{cols};
+
+    $self->SUPER::stage3layout($w, @p);
+    $self->{w} = $w;
+    1; # принудительно обновим размеры выше, т.к. обновили свой
+}
+
+sub stage4draw {
+    my ($self, $x, $y, @p) = @_;
+
+    # нужно подвинуть все ячейки в ряду наверх, для этого мы знаем
+    # свою высоту и высоту всей строки.
+    $y += $self->{rowh} - $self->{h};
+
+    $self->SUPER::stage4draw($x + $self->{padl}, $y - $self->{padv}, @p);
+}
 
 1;
