@@ -847,21 +847,21 @@ sub stage4draw {
     my ($self, $pdf) = @_;
     
     my $page = $pdf->page();
-    my $g = $self->{geom};
-    $page->size($g->{size});
+    my $geom = $self->{geom};
+    $page->size($geom->{size});
 
-    my $gfx = $page->graphics();
-    $gfx->move($g->{x}, $g->{y});
-    $gfx->hline($g->{x} + $g->{w});
-    $gfx->vline($g->{y} + $g->{h});
-    $gfx->hline($g->{x});
-    $gfx->vline($g->{y});
-    $gfx->stroke();
+    my $g = $page->graphics();
+    $g->move($geom->{x}, $geom->{y});
+    $g->hline($geom->{x} + $geom->{w});
+    $g->vline($geom->{y} + $geom->{h});
+    $g->hline($geom->{x});
+    $g->vline($geom->{y});
+    $g->stroke();
 
-    my $y = $g->{y} + $g->{h};
+    my $y = $geom->{y} + $geom->{h};
     foreach my $c (@{ $self->{chld} }) {
         $y -= $c->{h};
-        $c->stage4draw($g->{x}, $y, $page, $pdf);
+        $c->stage4draw($geom->{x}, $y, $page, $pdf);
         $y -= $self->{spc} + $self->{spa};
     }
 }
@@ -1399,16 +1399,16 @@ sub stage3layout {
 sub stage4draw {
     my ($self, $x, $y, $page, @p) = @_;
 
-    my $gfx = $page->graphics();
-    $gfx->move($x, $y);
-    $gfx->vline($y + $self->{h});
-    $gfx->stroke();
-    $gfx->move($x+2, $y);
-    $gfx->vline($y + $self->{h});
-    $gfx->stroke();
-    $gfx->move($x+4, $y);
-    $gfx->vline($y + $self->{h});
-    $gfx->stroke();
+    my $g = $page->graphics();
+    $g->move($x, $y);
+    $g->vline($y + $self->{h});
+    $g->stroke();
+    $g->move($x+2, $y);
+    $g->vline($y + $self->{h});
+    $g->stroke();
+    $g->move($x+4, $y);
+    $g->vline($y + $self->{h});
+    $g->stroke();
 
     $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
 }
@@ -1493,19 +1493,48 @@ sub _addrow {
 sub addhdr { shift()->_addrow(DTblHdr => @_); }
 sub addrow { shift()->_addrow(DTblRow => @_); }
 
+sub padchld {
+    my $self = shift;
+
+    # отступы сверху и снизу у рядов. Количество
+    # рядов в таблице может измениться, т.к. она
+    # может быть обрезана страницей и поэтому
+    # изменятся первые и крайние ряды, а для
+    # отступов в mode=2 это критично. Поэтому
+    # делаем эту процедуру всегда при обновлении размеров.
+    foreach my $c (@{ $self->{chld} }) {
+        delete $c->{padt};
+        delete $c->{padb};
+    }
+
+    my $n = @{ $self->{chld} };
+    if ($n && ($self->{mode} > 1)) {
+        # расстояние до верхней и нижней границ таблицы.
+        $self->{chld}->[0]->{padt} = 5;
+        $self->{chld}->[$n-1]->{padb} = 5;
+    }
+    foreach my $c (@{ $self->{chld} }) {
+        $c->{padt} //= $self->{mode} == 1 ? 5 : 0;
+        $c->{padb} //= $self->{mode} == 1 ? 5 : 0;
+        # если размер строки уже был посчитан,
+        # его надо пересчитать/обновить
+        $c->szchld() if defined $c->{h};
+    }
+}
+
 sub szchld {
     my $self = shift;
 
+    $self->padchld() if $self->{mode} > 1;
     $self->SUPER::szchld();
-    $self->{h} += $self->{padv} * 2;
 }
 
 sub stage2size {
     my ($self, $p, @p) = @_;
 
     $self->{spc}    = $self->{mode} == 1 ? 0 : 5;
-    $self->{padv}   = $self->{mode} == 1 ? 0 : 5; # расстояние до верхней и нижней границ таблицы.
 
+    $self->padchld();
     $self->SUPER::stage2size($p, @p);
 }
 
@@ -1560,7 +1589,7 @@ sub stage4draw {
         }
     }
 
-    $self->SUPER::stage4draw($x, $y - $self->{padv}, $page, @p);
+    $self->SUPER::stage4draw($x, $y, $page, @p);
 }
 
 
@@ -1594,6 +1623,7 @@ sub szchld {
     my $self = shift;
 
     $self->SUPER::szchld();
+    $self->{h} += $self->{padt} + $self->{padb};
     $_->{rowh} = $self->{h} foreach @{ $self->{chld} };
 }
 
@@ -1601,6 +1631,10 @@ sub stage2size {
     my ($self, $p, @p) = @_;
 
     $self->{spc}    = $self->{mode} == 1 ? $p->{style}->height() * 0.2 : 0;
+
+    # допотступы слева и справа в колонках.
+    # количество колонок у нас неизменно, поэтому
+    # делаем однократно в проходе stage2size
     my $n = @{ $self->{chld} };
     if ($n && ($self->{mode} > 1)) {
         $self->{chld}->[0]->{padl} = 0;
@@ -1609,10 +1643,15 @@ sub stage2size {
     foreach my $c (@{ $self->{chld} }) {
         $c->{padl} //= 5;
         $c->{padr} //= 5;
-        $c->{padv} = $self->{mode} == 1 ? 5 : 0;
     }
 
     $self->SUPER::stage2size($p, @p);
+}
+
+sub stage4draw {
+    my ($self, $x, $y, @p) = @_;
+
+    $self->SUPER::stage4draw($x, $y - $self->{padt}, @p);
 }
 
 
@@ -1650,18 +1689,18 @@ sub szchld {
     my $self = shift;
 
     $self->SUPER::szchld();
-    $self->{w} += $self->{padl} + $self->{padr};
-    $self->{h} += $self->{padv} * 2;
+    $self->{w} = $self->{wfix} // $self->{w} + $self->{padl} + $self->{padr};
 }
 
 sub stage3layout {
     my ($self, $w, @p) = @_;
 
-    $w = ($w - $self->{padl} - $self->{padr}) * $self->{colw} / $self->{cols};
+    $self->{wfix} = ($w - $self->{padl} - $self->{padr}) * $self->{colw} / $self->{cols};
 
-    $self->SUPER::stage3layout($w, @p);
-    $self->{w} = $w;
-    1; # принудительно обновим размеры выше, т.к. обновили свой
+    $self->SUPER::stage3layout($self->{wfix}, @p);
+    $self->{w} = $self->{wfix};
+    1; # принудительно обновим размеры выше, т.к. свой меняется на фиксированный,
+       # а может и не измениться, если изначально наша ширина меньше фиксированной.
 }
 
 sub stage4draw {
@@ -1671,7 +1710,7 @@ sub stage4draw {
     # свою высоту и высоту всей строки.
     $y += $self->{rowh} - $self->{h};
 
-    $self->SUPER::stage4draw($x + $self->{padl}, $y - $self->{padv}, @p);
+    $self->SUPER::stage4draw($x + $self->{padl}, $y, @p);
 }
 
 1;
