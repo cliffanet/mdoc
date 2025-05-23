@@ -443,6 +443,73 @@ DESTROY { shift()->close(); }
 # ============================================================
 # ============================================================
 
+
+# ============================================================
+# ============================================================
+package DSumIterator;
+
+sub new {
+    my ($class, $node, $f, $spa) = @_;
+    my $m = $f.'spc';
+    my $szfull = ($node->{$f.'beg'}||0) + ($node->{$f.'end'}||0);
+    return bless(
+        {
+            n       => 0,               # сколько всего получено элементов
+            f       => $f,              # поле w/h, по которому делаем отсчёт
+            bybeg   => 0,               # отступ от самого начала отсчёта
+            byprv   => 0,               # отступ от начала предыдущего элемента
+            szfull  => $szfull,         # полное расстояние, включая текущий элемент
+            spc     => $node->$m()||0,  # пробельное расстояние между элементами
+            spa     => $spa // $node->{$f.'spa'} // 0, # дополнительное пробельное расстояние
+            # Механизм полей wbeg/hbeg/wend/hend - эти поля предполагают
+            # отступ внутри своего размера до первого элемента и после крайнего.
+            # Это нужно учитывать именно тут, т.к. это влияет на определение
+            # суммарного размера при попытке разрезать элемент на части
+            # методами layout/wsplit/hsplit
+            szbeg   => $node->{$f.'beg'}||0,
+            szend   => $node->{$f.'end'}||0,
+
+            chld    => $node->{chld},
+        },
+        $class
+    );
+}
+
+sub avail {
+    my $self = shift;
+    my $beg = $self->{n};
+    my $end = @{ $self->{chld} } - 1;
+    return if $beg > $end;
+    return (@{ $self->{chld} })[$beg .. $end];
+}
+
+sub fetch {
+    my $self = shift;
+
+    return if $self->{n} >= @{ $self->{chld} };
+    my $c = $self->{chld}->[ $self->{n} ];
+    $self->{n} ++;
+
+    $self->{byprv} =
+        $self->{n} > 1 ?
+            $self->{sz} + $self->{spc} + $self->{spa} :
+            $self->{szbeg};
+    $self->{bybeg} += $self->{byprv};
+
+    my $f = $self->{f};
+    $self->{sz} = ref($c) eq 'HASH' ? $c->{$f}||0 : $c->$f($self->{spa});
+    
+    $self->{szfull} = $self->{bybeg} + $self->{sz} + $self->{szend};
+
+    return $c;
+}
+
+sub full {
+    my $self = shift;
+    while ($self->fetch()) {}
+    return $self->{szfull};
+}
+
 package DNode;
 
 sub new {
@@ -460,44 +527,125 @@ sub add {
     push @{ $self->{chld} }, @_;
 }
 
-sub empty { return  @{ shift()->{chld} } == 0; }
+sub empty   { return  @{ shift()->{chld} } == 0; }
 
-sub szchld {}
-# Метод szchld нужен, чтобы обновить свой размер с учётом списка потомков.
-# Тем узлам, чьи размеры не зависят от их вложенных элементов, этот
-# метод не нужен.
-sub _szchld {
-    my ($self, $fs, $fm) = @_;
-    # fs - суммируемое поле
-    # fm - поле с максимальным значением
+# Получение размеров элемента.
+#
+# До этого использовались статические размеры w/h в полях объекта,
+# которые обновлялись в stage2size, но этот размеры могут меняться
+# и на других этапах, например при изменении количества подэлементов
+# или размеров отступов. Поэтому принято решение - каждый раз считать
+# размер, когда его надо получить вышестоящему элементу. Это немного
+# накладно, т.к. каждый раз мы запускаем рекурсию до самых глубин,
+# однако, так надёжнее и проще с т.з. формирования дополнительных
+# отступов и прочих изменений размеров на разных стадиях.
+#
+# Чтобы немного разгрузить накладные расходы на рекурсию до низу,
+# мы разделим методы получения размеров по длинной и короткой
+# сторонам. Как правило, нам нужно знать только длину/высоту,
+# и чаще всего - это длинная сторона. Но, например, для вычисления
+# высоты содержимого страницы нам не нужно знать ширину строк,
+# а только её высоту, что будет сильно экономнее на рекурсии.
+#
+# У нас система со сложной иерархией, где несколько раз
+# происходит переход от элементов горизонтального наполнения
+# к элементам вертикального наполнения и обратно.
+# Например: страница (верт наполнение) - строка (гор наполн.).
+# Тут всё просто, один переход, но в случае с таблицей:
+# Страница - таблица (верт нап) - ряд (гор нап) - ячейка (верт)
+#
+# Чтобы не запутаться, введём набор w/h-методов, отвечающих
+# за линейные размеры и интервалы между объектами. Обойтись
+# простыми методами long()/shrt(), которые определят размер
+# по длинной и короткой сторонам, не получится, т.к. в
+# узлах перехода между горизонтальными и вертикальными
+# наполнения будут наложения и путанницы.
 
-    $self->{w} = 0;
-    $self->{h} = 0;
+# w() и h() - ширина и высота - это собственные линейные размеры,
+# которые объект будет демонстрировать всем.
+sub w { shift()->{w}||0 }
+sub h { shift()->{h}||0 }
+
+# wspc() и hspc() - горизонтальные и вертикальные интервалы
+# между своими подэлементами
+sub wspc { shift()->{wspc}||0 }
+sub hspc { shift()->{hspc}||0 }
+
+# wsum() и hsum() - это суммарный размер всех своих подэлементов
+# по ширине или по высоте. Внутри этих методов вызываются
+# w()/h() для всех своих подэлементов и собственый wspc()/hspc().
+sub sumi { DSumIterator->new(@_); }
+sub wsum { shift()->sumi('w', shift())->full(); }
+sub hsum { shift()->sumi('h', shift())->full(); }
+
+# wmax()/hmax() - максимальный размер из всех своих подэлементов
+sub _max {
+    my ($self, $f) = @_;
+    
+    my $max = 0;
     foreach my $c (@{ $self->{chld} }) {
-        $self->{$fs} += $c->{$fs};
-        $self->{$fm} = $c->{$fm} if $self->{$fm} < $c->{$fm};
+        my $v = ref($c) eq 'HASH' ? $c->{$f} : $c->$f();
+        $max = $v if $max < $v;
     }
 
-    my $wcnt = @{ $self->{chld} };
-    $self->{$fs} += ($self->{spc} + $self->{spa}) * ($wcnt-1) if $wcnt;
+    return ($self->{$f.'beg'}||0) + $max + ($self->{$f.'end'}||0);
 }
+sub wmax { shift()->_max('w'); }
+sub hmax { shift()->_max('h'); }
 
 sub stage2size {
     my $self = shift;
-    # метод для рекурсивного обновления всего дерева с одинаковым
-    # набором аргументов. Самые нижние узлы, у которых нет или
-    # не может быть вложенных элементов, должны обновить только свой размер.
-    $_->stage2size(@_) foreach @{ $self->{chld} || [] };
-
-    $self->{spc} ||= 0;
-    $self->{spa} = 0;
-    $self->szchld();
+    $_->stage2size(@_) foreach @{ $self->{chld} };
 }
 
-sub restw {}
-sub resth {}
-sub _rest {
-    my ($self, $fs, $sz) = @_;
+# механизм работы с интервалами и justify за счёт них
+sub _spcnt {
+    my ($self, $f) = @_;
+
+    my $spcnt = 0;
+    my $m = $f.'spc';
+    my $spc = $self->$m();
+    $m = $f.'spcnt';
+    my $p = undef;
+    foreach my $c (@{ $self->{chld} }) {
+        # между элементами на текущем уровне местом разрыва считается:
+        #   - наличие базового интервала у $self
+        #   - отсутствие у предыдущего элемента флага nobgend
+        #   - отсутствие у текущего элемента флага nobrbeg
+        if ($p && $spc && !$p->{nobgend} && !$c->{nobrbeg}) {
+            $spcnt ++;
+        }
+        if ($c->{chld} && (ref($c) ne 'HASH')) {
+            $spcnt += $c->$m();
+        }
+        $p = $c;
+    }
+
+    return $spcnt;
+}
+sub wspcnt { shift()->_spcnt('w') }
+sub hspcnt { shift()->_spcnt('h') }
+
+sub spaset {
+    my ($self, $f, $spa) = @_;
+
+    foreach my $c (@{ $self->{chld} }) {
+        $c->{chld} || next;
+        $c->spaset($f, $spa);
+    }
+
+    if (defined $spa) {
+        $self->{$f.'spa'} = $spa;
+    }
+    else {
+        delete $self->{$f.'spa'};
+    }
+}
+
+# метод Xchldsplit отрезает от списка нижестоящих элементов
+# все, что не влезут в размер $sz
+sub _split {
+    my ($self, $f, $sz) = @_;
     # зная размерности всех элементов, мы можем их спокойно распределить
     # по структуре. Для этого на входе получаем поле размерности и значение
     # размерности. Для горизонтальных элементов это 'w' и максимальная ширина,
@@ -509,76 +657,73 @@ sub _rest {
     #       возвращает список своих подэлементов, которые не влезли в этот
     #       размер. Если список пуст, значит все подэлементы влезли.
 
+    my $m = $f.'split';
     my @chld = ();
-    my @over = @{ $self->{chld} };
-    while (my ($c) = @over) {
-        if (@chld) {
-            # хватает ли места хотябы на интервал между элементами
-            $sz -= $self->{spc};
-            last if $sz <= 0;
-        }
-
-        if ($c->{$fs} <= $sz) {
+    my $s = $self->sumi($f, 0); # принудительно отменяем spa
+    my @over = ();
+    while (my $c = $s->fetch()) {
+        if ($s->{szfull} <= $sz) {
             # если на элемент хватает место целиком, то мы его
             # так и оставляем
-            push @chld, shift @over;
-            $sz -= $c->{$fs};
+            push @chld, $c;
             next;
         }
 
-        # Если это вообще не объект, так же завершаем задачу разделения
-        last if !ref($c) || (ref($c) eq 'HASH');
-
         # если места на очередной элемент не хватило,
-        # просим его уместиться в той же размерности
-        my $restm = 'rest' . $fs;
+        # просим его уместиться в той же размерности.
         # если элемент не может уместиться, перенесём его целиком
-        $c->can($restm) || last;
-        my $over = $c->$restm($sz) || last;
+        my $over = ref($c) eq 'HASH' ? undef : $c->$m($sz - $s->{bybeg});
 
-        @$over || next; # элемент сообщил нам, что уместился весь.
-        # эту проверку выполняем на всякий случай, но такая
-        # ситуация может возникнуть только если у элемента
-        # ошибка в его размерах w/h, которые мы уже проверили выше.
+        if (!$over) {
+            # Если не уместился даже малой частью, то реализуем
+            # опцию nobr.
+            @over = $c;
+            while (@chld && ($over[0]->{nobrbeg} || $chld[@chld-1]->{nobrend})) {
+                unshift @over, pop(@chld);
+            }
+            last;
+        }
+
+        if (@$over) {
+            # а вернул нам элемент свой подэлементы, которые не вошли
+            # в тот размер, который мы ему передали, поэтому сделаем
+            # копию этого элемента и отдадим ему этот остаток.
+            # эта копия зайдёт в следующий раз
+            my $dup = $c->dup(@$over);
+            @over = $dup;
+            $dup->splitover();
+        }
         
         # текущий элемент, видя, что не смог вместить всё, должен
         # сам обрезать своё содержимое и обновить свой размер.
         # поэтому тут мы его добавляем не глядя
-        push @chld, shift @over;
-
-        # а вернул нам элемент свой подэлементы, которые не вошли
-        # в тот размер, который мы ему передали, поэтому сделаем
-        # копию этого элемента и отдадим ему этот остаток.
-        my $dup = $c->dup(@$over);
-        $dup->szchld();
-        # эта копия зайдёт в следующий раз
-        unshift @over, $dup;
+        push @chld, $c;
         # А мы на этом должны уже прерваться, т.к. понятно, что
         # больше в нас ничего не влезет.
         last;
     }
+    push @over, $s->avail();
 
     @chld || return; # если вообще не смогли разделить
     @over || return []; # если вдруг в нас всё влезло
 
     # Если есть невлезшие элементы, обрежем свой список и обновим размер
     $self->{chld} = [@chld];
-    $self->szchld();
 
     # и возвращаем невлезший остаток
     return [@over];
 }
+sub wsplit {}
+sub hsplit {}
+sub splitover {}
 
-sub laynode {  }
-sub _laynode {
-    my ($self, $fs, $sz) = @_;
+# метод layout заставляет все подэлементы влезть в размер $sz
+sub layout {
+    my ($self, $f, $sz) = @_;
     # этот метод применяется в точке перехода к уровню вертикального
     # или горизонтального заполнения. Например, FContent сам является
     # уровнем вертикального заполнения, но все его подэлементы - это
     # уже уровень горизонтального заполнения.
-    #
-    # Поэтому внутри FContent необходимо определить метод:
-    # sub laynode { shift()->_laynode('w', $_[0]); }
     #
     # В результате, ответвление от stage3layout внутри FContent выполнит вмещение
     # в горизонтальный размер $w всех более глубоких уровней. Он порежет
@@ -586,73 +731,36 @@ sub _laynode {
     # у всех нижестоящих элементов зафиксируется их высота, и можно будет
     # на уровне DDocument выполнять аналогичное разделение контента вглубь
     # уже по вертикальному размеру $h (разделение на страницы).
-
-    # Если наш размер уже вписывается в заданный, то необходимости
-    # лезть вглубь элементов уже и не будет.
-    return if $self->{$fs} <= $sz;
-
-    # Для сравнения, логика методов restX:
-    # При вызове этот метод на входе получает размер, этот размер ему надо
-    # разделить между всеми chld. Для этого он сначала смотрит первый
-    # подэлемент, подом для второго остаётся места меньше на размер первого
-    # элемента - и т.д.
-    # В итоге, например, вызывая для FLine метод restw, он отрежет от строки
-    # всё, что за пределами $sz.
-
-    # И уже в этом методе мы не уменьшаем размер. Например, если мы вызываемся
-    # из FContent (содержит внутри себя строки FLine), который является
-    # уже блоком вертикального заполнения, то мы:
+    
+    # Например, если мы вызываемся из FContent (содержит внутри себя строки FLine),
+    # который является уже блоком вертикального заполнения, то мы:
     # - отрезаем от первого своего chld (FLine) всё, что за границами $sz,
     # - помещаем отрезанное в новый FLine (копия предыдущего),
     # - помещаем новый FLine следом за первым...
     # и т.д.
 
+    my $m = $f.'split';
     my @chld = ();
     my @prev = @{ $self->{chld} };
     while (my $c = shift @prev) {
         push @chld, $c;
-        next if $c->{$fs} <= $sz;
-        my $restm = 'rest' . $fs;
         # если элемент не может уместиться, оставим его таким, как есть
-        $c->can($restm) || next;
-        my $over = $c->$restm($sz) || next;
-        @$over || next; # почему-то элемент уместился весь,
-                        # хотя мы проверяли его размер выше
+        my $over = $c->$m($sz) || next;
+        @$over || next; # элемент уместился весь
         
         # Помещаем остаток в такой же экземпляр
         my $dup = $c->dup(@$over);
-        $dup->szchld();
         # повторно проверим остаток на следующей итерации
         unshift @prev, $dup;
+        $dup->splitover();
     }
 
     $self->{chld} = [@chld];
-    $self->szchld();
-    1;  # сигнал вышестоящим о том, что произведены изменения в размерах
-        # и их надо обновить выше
 }
 
 sub stage3layout {
     my $self = shift;
-    # этот метод нужен, чтобы рекурсивно вниз ко всем нижестоящим уровням
-    # передать границы области, в которую необходимо поместиться.
-    # На самом верхнем уровне DDocument сделает ответвление через laynode
-    # в рекурсивное разделение контента по вертикали (на страницы).
-    # Но перед этим сначала выполнится ответвление на уровне FContent
-    # вглудь своих подэлементов, чтобы уместить их в горизонтальный размер,
-    # разделив там, где это нужно.
-    #
-    # Этот метод переопределяют только узлы, где жёсткие границы меняются.
-    # Например, DPage задаёт так свою ширину и высоту.
-    # Уровнем ниже может оказаться ячейка таблицы, которая изменит ширину.
-    my $chg = 0;
-    foreach my $c (@{ $self->{chld} || [] }) {
-        next if !ref($c) || (ref($c) eq 'HASH');
-        $chg ++ if $c->stage3layout(@_);
-    }
-    $self->szchld() if $chg;
-    $chg ++ if $self->laynode(@_);
-    return $chg;
+    $_->stage3layout(@_) foreach @{ $self->{chld} };
 }
 
 sub stage4draw {
@@ -666,15 +774,19 @@ sub stage4draw {
 package DNodeH;     # узел вертикального заполнения
 use base 'DNode';
 
-sub szchld  { shift()->_szchld('w', 'h'); }
-sub restw   { shift()->_rest  ('w', @_); }
+sub w       { shift()->wsum(shift()); }
+sub h       { shift()->hmax(); }
+sub wsplit  { shift()->_split('w', @_) }
 
 sub stage4draw {
-    my ($self, $x, @p) = @_;
+    my ($self, $x, $y, @p) = @_;
 
-    foreach my $c (@{ $self->{chld} }) {
-        $c->stage4draw($x, @p);
-        $x += $c->{w} + $self->{spc} + $self->{spa};
+    $y += $self->{hend}||0;
+
+    my $s = $self->sumi('w');
+    while (my $c = $s->fetch()) {
+        $x += $s->{byprv};
+        $c->stage4draw($x, $y, @p);
     }
 }
 
@@ -684,18 +796,31 @@ sub stage4draw {
 package DNodeV;     # узел горизонтального заполнения
 use base 'DNode';
 
-sub szchld  { shift()->_szchld('h', 'w'); }
-sub resth   { shift()->_rest  ('h', @_); }
+sub w       { shift()->wmax(); }
+sub h       { shift()->hsum(shift()); }
+sub hsplit  { shift()->_split('h', @_) }
 
 sub stage4draw {
     my ($self, $x, $y, @p) = @_;
 
-    $y += $self->{h};
+    $x += $self->{wbeg}||0;
 
-    foreach my $c (@{ $self->{chld} }) {
-        $y -= $c->{h};
-        $c->stage4draw($x, $y, @p);
-        $y -= $self->{spc} + $self->{spa};
+    # тут мы дважды рекурсивно вычисляем размер:
+    # сначала нам надо знать полный размер, а потом
+    # когда рисуем заного приходится вычислять
+    # размерности всех подэлементов, т.к. нам нужно
+    # выполнить смещение для каждого элемента отдельно.
+    $y += $self->h();
+    # тут можно подумать, что делать.
+    # Как вариант - использовать в качестве $y -
+    # не нижнюю границу элемента, а верхнюю.
+    # Указание в качестве $y нижней границы идёт
+    # от принципов отрисовки в pdf, но так сильно
+    # усложняется вычисление этого значения
+    my $s = $self->sumi('h');
+    while (my $c = $s->fetch()) {
+        $y -= $s->{byprv};
+        $c->stage4draw($x, $y - $s->{sz}, @p);
     }
 }
 
@@ -707,59 +832,6 @@ sub stage4draw {
 #
 # ============================================================
 # ============================================================
-
-#####
-# Механизм растягивания за счёт внутренних интервалов между элементами.
-# Для этого существует поле spa. Но его ещё надо корректно вычислить.
-# У нас может быть строка глубокой вложенности элементов.
-# 
-# 1. рекурсивно вниз считаем суммарное число элементов
-# 2. высчитываем размер одного такого интервала
-# 3. снова рекурсивно устанавливаем одинаковый spa для всех
-#
-# пп 1,3 надо делать только для тех элементов, которые поддерживают
-# рекурсивную установку spa
-#
-package DJustify;
-
-sub spacnt {
-    my $self = shift;
-    my $cnt = @{ $self->{chld} } || return 0;
-    $cnt --;
-    foreach my $c (@{ $self->{chld} }) {
-        $c->{chld} || next;
-        $c->can('spacnt') || next;
-        $cnt += $c->spacnt();
-    }
-    return $cnt;
-}
-
-sub spaset {
-    my ($self, $spa) = @_;
-
-    foreach my $c (@{ $self->{chld} }) {
-        $c->{chld} || next;
-        $c->can('spaset') || next;
-        $c->spaset($spa);
-    }
-
-    $self->{spa} = $spa;
-    $self->szchld();
-}
-
-# Весь этот механизм вставим в метод restX - он обрезает строку
-# под нужный размер. Тут нам двойное удобство:
-#   1. Именно тут нам удобно узнать, что строка не поместилась вся, она
-#      обрезана и этот кусок надо растянуть.
-#   2. У нас имеется размер, до которого надо растянуть строку.
-sub justify {
-    my ($self, $sz) = @_;
-    # рассчитываем дополнительные пробельные расстояния
-    my $spacnt = $self->spacnt() || return;
-    # устанавливаем spa по всему дереву от нас вниз
-    $self->spaset(($sz - $self->{w}) / $spacnt);
-}
-
 
 # ============================================================
 # ============================================================
@@ -820,13 +892,12 @@ sub stage3layout {
         w   => $w - ($m{left}||0) - ($m{right}||0),
         h   => $h - ($m{top}||0) - ($m{bottom}||0),
     );
-
-    # тут надо продублировать $geom{w}, $geom{h} вначале,
-    # чтобы они попали в нужном составе в laynode
-    $self->SUPER::stage3layout($geom{w}, $geom{h}, %geom);
+    
+    $self->SUPER::stage3layout(%geom);
+    $self->layout(h => $geom{h});
 }
 
-sub laynode { shift()->_laynode('h', $_[1]); }
+sub stage4draw { shift()->DNode::stage4draw(@_) }
 
 
 # ============================================================
@@ -835,12 +906,12 @@ package DPage;
 use base 'DNodeV';
 
 sub stage3layout {
-    my ($self, $w, $h, %g) = @_;
+    my ($self, %g) = @_;
 
     $self->{geom}   = { %g };
-    $self->{spc}    = 12;
+    $self->{hspc}   = 12;
 
-    $self->SUPER::stage3layout($w, $h);
+    $self->SUPER::stage3layout($g{w}, $g{h});
 }
 
 sub stage4draw {
@@ -859,10 +930,10 @@ sub stage4draw {
     $g->stroke();
 
     my $y = $geom->{y} + $geom->{h};
-    foreach my $c (@{ $self->{chld} }) {
-        $y -= $c->{h};
-        $c->stage4draw($geom->{x}, $y, $page, $pdf);
-        $y -= $self->{spc} + $self->{spa};
+    my $s = $self->sumi('h');
+    while (my $c = $s->fetch()) {
+        $y -= $s->{byprv};
+        $c->stage4draw($geom->{x}, $y - $s->{sz}, $page, $pdf);
     }
 }
 
@@ -881,13 +952,19 @@ sub new {
 sub stage2size {
     my ($self, $p, @p) = @_;
 
-    $self->{spc} = $p->{style}->height() * 0.2;
+    $self->{hspc} = $p->{style}->height() * 0.2;
 
     if (my $al = $self->{align}) {
         $_->{align} = $al foreach @{ $self->{chld} };
     }
 
     $self->SUPER::stage2size($p, @p);
+}
+
+sub stage3layout {
+    my ($self, $w, $h, @p) = @_;
+    $self->SUPER::stage3layout($w, $h, @p);
+    $self->layout(w => $w);
 }
 
 sub stage4draw {
@@ -897,10 +974,6 @@ sub stage4draw {
 
     $self->SUPER::stage4draw($x, $y, $d, $page, @p);
 }
-
-# в laynode приходят два размера: $w, $h - это границы
-# радела: страницы, ячейки таблицы и т.д.
-sub laynode { shift()->_laynode('w', $_[0]); }
 
 sub toline {
     my $self = shift;
@@ -922,38 +995,64 @@ sub toline {
 # ============================================================
 # ============================================================
 package DLine;
-use base 'DNodeH', 'DJustify';
+use base 'DNodeH';
 
 sub stage2size {
     my ($self, $p, @p) = @_;
+    
+    $self->{wspc} = $p->{style}->width(' ');
 
-    $self->{spc} = $p->{style}->width(' ');
     $self->SUPER::stage2size($p, @p);
 }
 
-# активация justify для всей строки,
-# включая все вложенные элементы, которым
-# достаточно прописать base 'DJustify'.
-# Метод restX надо переопределять только
-# на самом верхнем уровне растягивания.
-sub restw {
-    my $self = shift;
-    my ($sz) = @_;
 
-    my $over = $self->SUPER::restw(@_) || return;
-    @$over || return $over; # строка вся влезла
+# активация justify для всей строки,
+    # Весь этот механизм вставим в метод wsplit - он обрезает строку
+    # под нужный размер. Тут нам двойное удобство:
+    #   1. Именно тут нам удобно узнать, что строка не поместилась вся, она
+    #      обрезана и этот кусок надо растянуть.
+    #   2. У нас имеется размер, до которого надо растянуть строку.
+sub splitover {
+    my $self = shift;
+    # удаляем {spa} после предыдущей нарезанной строки,
+    # подробнее - ниже.
+    delete $self->{wspa};
+}
+sub wsplit {
+    my $self = shift;
+
+    my $over = $self->SUPER::wsplit(@_) || return;
+    @$over                      || return $over; # строка вся влезла
+    my $spcnt = $self->wspcnt() || return $over; # неразрезаемая строка
 
     delete $self->{align};
-    $self->justify($sz);
+
+    my ($sz) = @_;
+    my $w = $self->w(0); # актуальный размер с принудительным wspa=0
+    # Для justify выбрано удобное место для определения,
+    # что строка была порезана и её надо растянуть.
+    # Однако, когда мы растягиваем её тут, мы задаём spa,
+    # и потом этот spa копируется в следующую строку,
+    # потому что метод wsplit вызывается методом
+    # layout, который нарезает строки по определённому
+    # размеру, а копию делает уже после выхода
+    # из wsplit, копируя в т.ч. и spa, который
+    # устанавливается внутри wsplit.
+    # Для этого мы удаляем spa выше (внутри splitover).
+    
+    # устанавливаем spa по всему дереву от нас вниз
+    $self->spaset(w => ($sz - $w) / $spcnt);
     return $over;
 }
 
 sub stage3layout {
     my ($self, $w, @p) = @_;
 
-    $self->{ctxw} = $w;
+    $self->{ctxw} = $w; # текущая ширина контекста нужна для align
 
-    $self->SUPER::stage3layout($w, @p);
+    # вложенные элементы только строчные, они будут порезаны
+    # рекурсивно в layout('w'), который вызывает DContent::stage3layout
+    # Тут продолжать рекурсию stage3layout уже не требуется.
 }
 
 sub stage4draw {
@@ -961,15 +1060,14 @@ sub stage4draw {
 
     # механизм горизонтального выравнивания строки
     if (($self->{align}||'') eq 'r') {
-        $x += $self->{ctxw} - $self->{w};
+        $x += $self->{ctxw} - $self->w();
     }
     elsif (($self->{align}||'') eq 'c') {
-        $x += ($self->{ctxw} - $self->{w}) / 2;
+        $x += ($self->{ctxw} - $self->w()) / 2;
     }
 
     $self->SUPER::stage4draw($x, @p);
 }
-
 
 
 
@@ -983,7 +1081,7 @@ sub stage4draw {
 # ============================================================
 
 package DStr;
-use base 'DNodeH', 'DJustify';
+use base 'DNodeH';
 
 sub new {
     my $self = shift()->SUPER::new();
@@ -996,25 +1094,28 @@ sub addwrd {
 
     foreach my $s (@_) {
         my @wrd = split /\s+/, (ref($s) eq 'Str') || (ref($s) eq 'HASH') ? $s->{str} : $s;
-        shift(@wrd) if @wrd && ($wrd[0] eq '');
-        pop(@wrd)   if @wrd && ($wrd[@wrd-1] eq '');
+        if (@wrd && ($wrd[0] eq '')) {
+            shift(@wrd);
+        }
+        if (@wrd && ($wrd[@wrd-1] eq '')) {
+            pop(@wrd);
+        }
 
         $self->add(map { { str => $_ } } @wrd);
     }
 }
 
+sub h { shift()->{h} }
+
 sub stage2size {
     my ($self, $p) = @_;
 
-    my $h = $p->{style}->height();
     foreach my $c (@{ $self->{chld} }) {
         $c->{w} = $p->{style}->width($c->{str});
-        $c->{h} = $h;
     }
+    $self->{h} = $p->{style}->height();
 
-    $self->{spc} = $p->{style}->width(' ');
-    $self->{spa} = 0;
-    $self->szchld();
+    $self->{wspc} = $p->{style}->width(' ');
 
     # доп данные для отрисовки (получить их можем только тут):
     $self->{font}   = [ $p->{style}->font() ];
@@ -1051,15 +1152,16 @@ sub stage4draw {
     # и в ней надо задавать аж 6 чисел, только двое из которых -
     # это координаты.
 
-    if (my $spa = $self->{spa}) { # указано дополнительное расстояние между словами
-        foreach my $c (@{ $self->{chld} }) {
+    if ($self->{wspa}) { # указано дополнительное расстояние между словами
+        my $s = $self->sumi('w');
+        while (my $c = $s->fetch()) {
+            $x += $s->{byprv};
             $d->text($x, $y - $self->{ulpos}, $c->{str});
-            $x += $c->{w} + $self->{spc} + $spa;
         }
     }
     else {
         # если текст не надо растягивать, выводим его простой строкой с пробелами
-        $d->text($x, $y - $self->{ulpos}, join(' ', map { $_->{str} } @{ $self->{chld} }));
+        $d->text($x + ($self->{wbeg}||0), $y - $self->{ulpos}, join(' ', map { $_->{str} } @{ $self->{chld} }));
     }
 }
 
@@ -1067,7 +1169,7 @@ sub stage4draw {
 # ============================================================
 # ============================================================
 package DContentStyle;
-use base 'DNodeH', 'DJustify', 'DParserH';
+use base 'DNodeH', 'DParserH';
 
 sub new {
     my $self = shift()->SUPER::new(
@@ -1081,7 +1183,7 @@ sub stage2size {
     my ($self, $p, @p) = @_;
 
     local $p->{style} = $p->{style}->clone($self->{style} => 1);
-    $self->{spc} = $p->{style}->width(' ');
+    $self->{wspc} = $p->{style}->width(' ');
 
     $self->SUPER::stage2size($p, @p);
 }
@@ -1092,18 +1194,12 @@ sub stage2size {
 package DICode;
 use base 'DStr';
 
-sub szchld {
-    my $self = shift;
-    $self->SUPER::szchld(@_);
-    $self->{w} += ($self->{pad}||0) * 2;
-}
-
 sub stage2size {
     my ($self, $p, @p) = @_;
 
-    $self->{pad} = $p->{style}->width(' ');
-    $self->{fsz} = $p->{style}->height();
-    $self->{yz} = $p->{style}->height() * 0.2 - 1;
+    $self->{wbeg} = $p->{style}->width(' ');
+    $self->{wend} = $self->{wbeg};
+    $self->{vpad} = $p->{style}->height() * 0.2 - 1;
 
     $self->SUPER::stage2size($p, @p);
 }
@@ -1112,16 +1208,16 @@ sub stage4draw {
     my ($self, $x, $y, $d, @p) = @_;
 
     $d->gfxcol('#aaa');
-    $d->rrect($x, $y - $self->{yz}, $self->{w}, $self->{fsz} + $self->{yz}*2, 4);
+    $d->rrect($x, $y - $self->{vpad}, $self->w(), $self->h() + $self->{vpad}*2, 4);
 
-    $self->SUPER::stage4draw($x + $self->{pad}, $y, $d, @p);
+    $self->SUPER::stage4draw($x, $y, $d, @p);
 }
 
 
 # ============================================================
 # ============================================================
 package DHref;
-use base 'DNodeH', 'DJustify', 'DParserH';
+use base 'DNodeH', 'DParserH';
 
 sub new {
     my $self = shift()->SUPER::new(
@@ -1134,7 +1230,7 @@ sub new {
 sub stage2size {
     my ($self, $p, @p) = @_;
 
-    $self->{spc} = $p->{style}->width(' ');
+    $self->{wspc} = $p->{style}->width(' ');
 
     $self->SUPER::stage2size($p, @p);
 }
@@ -1142,16 +1238,18 @@ sub stage2size {
 sub stage4draw {
     my ($self, $x, $y, $d, $page, @p) = @_;
 
+    my ($w, $h) = ($self->w(), $self->h());
+
     $d->gfxcol('#000');
     my $g = $d->gfx();
     $g->move($x, $y);
-    $g->hline($x + $self->{w});
+    $g->hline($x + $w);
     $g->stroke();
 
     $self->SUPER::stage4draw($x, $y, $d, $page, @p);
 
     my $an = $page->annotation();
-    $an->rect($x, $y, $x + $self->{w}, $y + $self->{h});
+    $an->rect($x, $y, $x + $w, $y + $h);
     $an->uri($self->{url});
 }
 
@@ -1170,6 +1268,9 @@ sub new {
     return $self;
 }
 
+sub w { shift()->{w}; }
+sub h { shift()->{h}; }
+
 sub stage2size {
     my ($self, $p, @p) = @_;
 
@@ -1180,8 +1281,8 @@ sub stage2size {
     }
     elsif (my $alt = $self->{alt}) {
         $alt->stage2size($p, @p);
-        $self->{w} = $alt->{w};
-        $self->{h} = $alt->{h};
+        $self->{w}  = $alt->w();
+        $self->{h}  = $alt->h();
     }
     else {
         $self->{w} = 0;
@@ -1192,13 +1293,14 @@ sub stage2size {
 sub stage3layout {}
 
 sub stage4draw {
-    my ($self, $x, $y, $d, $page, @p) = @_;
+    my $self = shift;
 
     if ($self->{img}) {
+        my ($x, $y, $d, $page) = @_;
         $page->object($self->{img}, $x, $y);
     }
     elsif ($self->{alt}) {
-        $self->{alt}->stage4draw($x, $y, $d, $page, @p);
+        $self->{alt}->stage4draw(@_);
     }
 }
 
@@ -1223,14 +1325,9 @@ sub new {
 
     my $self = $class->SUPER::new(@_);
     $self->{deep} = $deep;
+    $self->{nobrend} = 1;
 
     return $self;
-}
-
-sub szchld {
-    my $self = shift;
-    $self->SUPER::szchld(@_);
-    $self->{h} += ($self->{hln}||0);
 }
 
 sub stage2size {
@@ -1240,13 +1337,21 @@ sub stage2size {
     my $sz = ($self->{deep} > 0) && ($self->{deep} <= @size) ? $size[ $self->{deep} - 1 ] : $size[ @size-1 ];
 
     local $p->{style} = $p->{style}->clone(bold => 1, size => $sz);
-    $self->{spc} = $p->{style}->width(' ');
     $self->{hln} = $self->{deep} > 2 ? 0 : $p->{style}->height() * 0.1;
+    $self->{hend} = $self->{hln};
 
     $self->SUPER::stage2size($p, @p);
 }
 
-sub resth {} # вертикальная неразрывность содержимого
+sub hsplit {} # вертикальная неразрывность содержимого
+
+sub stage3layout {
+    my ($self, $w, @p) = @_;
+
+    $self->{ctxw} = $w;
+
+    $self->SUPER::stage3layout($w, @p);
+}
 
 sub stage4draw {
     my ($self, $x, $y, $page, @p) = @_;
@@ -1261,14 +1366,6 @@ sub stage4draw {
     }
     
     $self->SUPER::stage4draw($x, $y + $self->{hln}, $page, @p);
-}
-
-sub stage3layout {
-    my ($self, $w, @p) = @_;
-
-    $self->{ctxw} = $w;
-
-    $self->SUPER::stage3layout($w, @p);
 }
 
 
@@ -1305,19 +1402,8 @@ sub addstr {
     my $self = shift;
 
     $self->add(
-        map {
-            {
-                str => (ref eq 'Str') || (ref eq 'HASH') ? $_->{str} : $_
-            }
-        } @_
+        map { { str => (ref eq 'Str') || (ref eq 'HASH') ? $_->{str} : $_ } } @_
     );
-}
-
-sub szchld {
-    my $self = shift;
-    $self->SUPER::szchld(@_);
-    $self->{w} += ($self->{padw}||0) * 2;
-    $self->{h} += ($self->{padw}||0) * 2;
 }
 
 sub stage2size {
@@ -1328,27 +1414,22 @@ sub stage2size {
     $self->{font}   = [ $style->font() ];
     $self->{ulpos}  = $style->ulpos();
 
-    $self->{padw} = $style->width(' ');
-    $self->{padh} = $style->height() * 0.7;
-    $self->{spc} = $style->height() * 0.2;
-    $self->{spa} = 0;
-    $self->{yz} = $style->height() * 0.2;
+    $self->{wbeg} = $style->width(' ');
+    $self->{wend} = $self->{wbeg};
+    $self->{hbeg} = $style->height() * 0.7;
+    $self->{hend} = $self->{hbeg};
+    $self->{hspc} = $style->height() * 0.2;
 
-    my $h = $p->{style}->height();
     foreach my $c (@{ $self->{chld} }) {
         $c->{w} = $style->width($c->{str});
-        $c->{h} = $h;
+        $c->{h} = $style->height();
     }
-
-    $self->szchld();
 }
 
 sub stage3layout {
     my ($self, $w, @p) = @_;
 
     $self->{ctxw} = $w;
-
-    $self->SUPER::stage3layout($w, @p);
 }
 
 sub stage4draw {
@@ -1357,19 +1438,20 @@ sub stage4draw {
     my $d = PageDraw->new($page);
 
     $d->gfxcol('#888');
-    $d->rrect($x, $y, $self->{ctxw}, $self->{h}, 4);
+    my $h = $self->h();
+    $d->rrect($x, $y, $self->{ctxw}, $h, 4);
 
-    $x += $self->{padw};
-    $y += $self->{h} - $self->{padh} + $self->{yz};
+    $x += $self->{wbeg};
+    $y += $h + $self->{hspc}/2;
 
     $d->font(@{ $self->{font} });
     my $t = $d->_text();
     $t->fill_color('#fff');
 
-    foreach my $c (@{ $self->{chld} }) {
-        $y -= $c->{h};
-        $d->text($x, $y - $self->{ulpos}, $c->{str});
-        $y -= $self->{spc} + $self->{spa};
+    my $s = $self->sumi('h');
+    while (my $c = $s->fetch()) {
+        $y -= $s->{byprv};
+        $d->text($x, $y - $s->{sz} - $self->{ulpos}, $c->{str});
     }
 
     $t->fill_color('#000');
@@ -1384,7 +1466,7 @@ use base 'DNodeV';
 sub stage2size {
     my ($self, $p, @p) = @_;
 
-    $self->{spc}    = 12;
+    $self->{hspc}   = 12;
     $self->{pad}    = 12;
 
     $self->SUPER::stage2size($p, @p);
@@ -1399,15 +1481,17 @@ sub stage3layout {
 sub stage4draw {
     my ($self, $x, $y, $page, @p) = @_;
 
+    my $h = $self->h();
+
     my $g = $page->graphics();
     $g->move($x, $y);
-    $g->vline($y + $self->{h});
+    $g->vline($y + $h);
     $g->stroke();
     $g->move($x+2, $y);
-    $g->vline($y + $self->{h});
+    $g->vline($y + $h);
     $g->stroke();
     $g->move($x+4, $y);
-    $g->vline($y + $self->{h});
+    $g->vline($y + $h);
     $g->stroke();
 
     $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
@@ -1428,9 +1512,10 @@ sub new {
 sub stage2size {
     my ($self, $p, @p) = @_;
 
-    $self->{spc}    = 12;
     $self->{pad}    = 20;
     $self->{nw}     = $p->{style}->width($self->{num} . '  ');
+
+    $self->{hspc}   = 12;
     $self->{font}   = [ $p->{style}->font() ];
     $self->{ulpos}  = $p->{style}->ulpos();
 
@@ -1450,7 +1535,7 @@ sub stage4draw {
     $d->font(@{ $self->{font} });
     $d->text(
         $x + $self->{pad} - $self->{nw},
-        $y + $self->{h} - $self->{font}->[1] - $self->{ulpos},
+        $y + $self->h() - $self->{font}->[1] - $self->{ulpos},
         $self->{num}
     );
 
@@ -1503,39 +1588,50 @@ sub padchld {
     # отступов в mode=2 это критично. Поэтому
     # делаем эту процедуру всегда при обновлении размеров.
     foreach my $c (@{ $self->{chld} }) {
-        delete $c->{padt};
-        delete $c->{padb};
+        delete $c->{hbeg};
+        delete $c->{hend};
     }
 
     my $n = @{ $self->{chld} };
     if ($n && ($self->{mode} > 1)) {
         # расстояние до верхней и нижней границ таблицы.
-        $self->{chld}->[0]->{padt} = 5;
-        $self->{chld}->[$n-1]->{padb} = 5;
+        $self->{chld}->[0]->{hbeg} = 5;
+        $self->{chld}->[$n-1]->{hend} = 5;
     }
     foreach my $c (@{ $self->{chld} }) {
-        $c->{padt} //= $self->{mode} == 1 ? 5 : 0;
-        $c->{padb} //= $self->{mode} == 1 ? 5 : 0;
-        # если размер строки уже был посчитан,
-        # его надо пересчитать/обновить
-        $c->szchld() if defined $c->{h};
+        $c->{hbeg} //= $self->{mode} == 1 ? 5 : 0;
+        $c->{hend} //= $self->{mode} == 1 ? 5 : 0;
     }
-}
-
-sub szchld {
-    my $self = shift;
-
-    $self->padchld() if $self->{mode} > 1;
-    $self->SUPER::szchld();
 }
 
 sub stage2size {
     my ($self, $p, @p) = @_;
 
-    $self->{spc}    = $self->{mode} == 1 ? 0 : 5;
+    $self->{hspc} = $self->{mode} == 1 ? 0 : 5;
 
     $self->padchld();
     $self->SUPER::stage2size($p, @p);
+}
+
+sub hsplit {
+    my $self = shift;
+
+    my $over = $self->SUPER::hsplit(@_) || return;
+
+    $self->padchld() if $self->{mode} > 1;
+
+    return $over;
+}
+
+sub splitover {
+    my $self = shift;
+    # Это единственное место, где понадобился данный метод.
+    # Он выполняется после разделения элемента на части
+    # для over-части. Никаких других обратных связей в этом
+    # случае не происходит, а именно тут она нужна:
+    # После разделения таблица на части нам нужно у обеих
+    # частей пересчитать hbeg/hend для всех рядов.
+    $self->padchld() if $self->{mode} > 1;
 }
 
 sub stage3layout {
@@ -1549,6 +1645,8 @@ sub stage3layout {
 sub stage4draw {
     my ($self, $x, $y, $page, @p) = @_;
 
+    my $h = $self->h();
+
     my $g = $page->graphics();
     $g->move($x, $y);
     $g->hline($x + $self->{ctxw});  # использование своей ширины не очень подходит,
@@ -1558,13 +1656,13 @@ sub stage4draw {
                                     # и из-за погрешности может оказаться как уже,
                                     # так и шире на пару пикселей.
     if ($self->{mode} == 1) {
-        $g->vline($y + $self->{h});
+        $g->vline($y + $h);
         $g->hline($x);
         $g->vline($y);
     }
     else {
         $g->stroke();
-        $g->move($x, $y + $self->{h});
+        $g->move($x, $y + $h);
         $g->hline($x + $self->{ctxw});
     }
     $g->stroke();
@@ -1574,18 +1672,18 @@ sub stage4draw {
         my $x1 = $x + ($self->{ctxw} * shift(@w) / $self->{cols});
         foreach my $w (@w) {
             $g->move($x1-1, $y);
-            $g->vline($y + $self->{h});
+            $g->vline($y + $h);
             $g->stroke();
             $x1 += $self->{ctxw} * $w / $self->{cols};
         }
 
         my @r = @{ $self->{chld} };
-        my $y1 = $y + $self->{h} - shift(@r)->{h};
+        my $y1 = $y + $h - shift(@r)->h();
         foreach my $r (@r) {
             $g->move($x, $y1);
             $g->hline($x + $self->{ctxw});
             $g->stroke();
-            $y1 -= $r->{h};
+            $y1 -= $r->h();
         }
     }
 
@@ -1619,18 +1717,8 @@ sub addcol {
     $self->add( DTblCol->new($self->{colw}->[$n], $self->{cols}, $self->{cola}->[$n], @_) );
 }
 
-sub szchld {
-    my $self = shift;
-
-    $self->SUPER::szchld();
-    $self->{h} += $self->{padt} + $self->{padb};
-    $_->{rowh} = $self->{h} foreach @{ $self->{chld} };
-}
-
 sub stage2size {
     my ($self, $p, @p) = @_;
-
-    $self->{spc}    = $self->{mode} == 1 ? $p->{style}->height() * 0.2 : 0;
 
     # допотступы слева и справа в колонках.
     # количество колонок у нас неизменно, поэтому
@@ -1648,10 +1736,13 @@ sub stage2size {
     $self->SUPER::stage2size($p, @p);
 }
 
-sub stage4draw {
-    my ($self, $x, $y, @p) = @_;
+sub stage3layout {
+    my ($self, $w, @p) = @_;
 
-    $self->SUPER::stage4draw($x, $y - $self->{padt}, @p);
+    $self->SUPER::stage3layout($w, @p);
+
+    my $h = $self->h() - $self->{hbeg} - $self->{hend};
+    $_->{rowh} = $h foreach @{ $self->{chld} };
 }
 
 
@@ -1685,22 +1776,17 @@ sub new {
     return $self;
 }
 
-sub szchld {
+sub w {
     my $self = shift;
-
-    $self->SUPER::szchld();
-    $self->{w} = $self->{wfix} // $self->{w} + $self->{padl} + $self->{padr};
+    return $self->{w} // $self->SUPER::w();
 }
 
 sub stage3layout {
     my ($self, $w, @p) = @_;
 
-    $self->{wfix} = ($w - $self->{padl} - $self->{padr}) * $self->{colw} / $self->{cols};
+    $self->{w} = $w * $self->{colw} / $self->{cols};
 
-    $self->SUPER::stage3layout($self->{wfix}, @p);
-    $self->{w} = $self->{wfix};
-    1; # принудительно обновим размеры выше, т.к. свой меняется на фиксированный,
-       # а может и не измениться, если изначально наша ширина меньше фиксированной.
+    $self->SUPER::stage3layout($self->{w} - $self->{padl} - $self->{padr}, @p);
 }
 
 sub stage4draw {
@@ -1708,7 +1794,7 @@ sub stage4draw {
 
     # нужно подвинуть все ячейки в ряду наверх, для этого мы знаем
     # свою высоту и высоту всей строки.
-    $y += $self->{rowh} - $self->{h};
+    $y += $self->{rowh} - $self->h();
 
     $self->SUPER::stage4draw($x + $self->{padl}, $y, @p);
 }
