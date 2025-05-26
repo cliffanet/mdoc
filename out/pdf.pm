@@ -488,11 +488,12 @@ sub fetch {
 
     return if $self->{n} >= @{ $self->{chld} };
     my $c = $self->{chld}->[ $self->{n} ];
+    my $p = $self->{n} > 0 ? $self->{chld}->[ $self->{n} - 1 ] : undef;
     $self->{n} ++;
 
     $self->{byprv} =
-        $self->{n} > 1 ?
-            $self->{sz} + $self->{spc} + $self->{spa} :
+        $p ?
+            $self->{sz} + ($p->{nospend} || $c->{nospbeg} ? 0 : $self->{spc} + $self->{spa}) :
             $self->{szbeg};
     $self->{bybeg} += $self->{byprv};
 
@@ -610,9 +611,9 @@ sub _spcnt {
     foreach my $c (@{ $self->{chld} }) {
         # между элементами на текущем уровне местом разрыва считается:
         #   - наличие базового интервала у $self
-        #   - отсутствие у предыдущего элемента флага nobgend
-        #   - отсутствие у текущего элемента флага nobrbeg
-        if ($p && $spc && !$p->{nobgend} && !$c->{nobrbeg}) {
+        #   - отсутствие у предыдущего элемента флага nospend
+        #   - отсутствие у текущего элемента флага nospbeg
+        if ($p && $spc && !$p->{nospend} && !$c->{nospbeg}) {
             $spcnt ++;
         }
         if ($c->{chld} && (ref($c) ne 'HASH')) {
@@ -844,7 +845,7 @@ sub content {
 
     foreach my $c (@_) {
         if (ref($c) eq 'Str') {
-            my $s = DStr->new($c->{str});
+            my $s = DStr->new($c);
             # попадаются пустые строки, их наличие будет
             # мешать корректному распределению пробелов
             # между словами в строках, состоящих из смешанных
@@ -1038,7 +1039,9 @@ sub wsplit {
     # размеру, а копию делает уже после выхода
     # из wsplit, копируя в т.ч. и spa, который
     # устанавливается внутри wsplit.
-    # Для этого мы удаляем spa выше (внутри splitover).
+    # Для этого мы дважды перестраховываемся:
+    #   - удаляем spa выше (внутри splitover)
+    #   - получаем ширину без учёта spa: $self->w(0)
     
     # устанавливаем spa по всему дереву от нас вниз
     $self->spaset(w => ($sz - $w) / $spcnt);
@@ -1093,15 +1096,52 @@ sub addwrd {
     my $self = shift;
 
     foreach my $s (@_) {
-        my @wrd = split /\s+/, (ref($s) eq 'Str') || (ref($s) eq 'HASH') ? $s->{str} : $s;
-        if (@wrd && ($wrd[0] eq '')) {
+        my $h = (ref($s) eq 'Str') || (ref($s) eq 'HASH');
+        my @wrd =
+            map { { str => $_ } }
+            split(
+                /\s+/,
+                $h ? $s->{str} : $s
+            );
+        @wrd || next;
+
+        my $w = $wrd[0];
+        if ($w->{str} eq '') {
             shift(@wrd);
         }
-        if (@wrd && ($wrd[@wrd-1] eq '')) {
-            pop(@wrd);
+        elsif ($h && $s->{nobrbeg}) {
+            $w->{nospbeg} = 1;
+            $w->{nobrbeg} = 1;
         }
 
-        $self->add(map { { str => $_ } } @wrd);
+        $w = $wrd[@wrd-1];
+        if ($w->{str} eq '') {
+            pop(@wrd);
+        }
+        elsif ($h && $s->{nobrend}) {
+            $w->{nospend} = 1;
+            $w->{nobrend} = 1;
+        }
+
+        $self->add(@wrd);
+    }
+
+    return if $self->empty();
+    if ($self->{chld}->[0]->{nobrbeg}) {
+        $self->{nospbeg} = 1;
+        $self->{nobrbeg} = 1;
+    }
+    else {
+        delete $self->{nospbeg};
+        delete $self->{nobrbeg};
+    }
+    if ($self->{chld}->[@{ $self->{chld} } - 1]->{nobrend}) {
+        $self->{nospend} = 1;
+        $self->{nobrend} = 1;
+    }
+    else {
+        delete $self->{nospend};
+        delete $self->{nobrend};
     }
 }
 

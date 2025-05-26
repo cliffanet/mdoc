@@ -499,13 +499,18 @@ sub _txtstyle_str {
                 # нашли совпадение
                 # в @r отправим всё, что находится до совпадения
                 if ($i > 0) {
-                    push @r, $s->substr(0, $i);
+                    my $r = $s->substr(0, $i);
+                    $r->{nobrbeg} = 1 if $s->{nobrbeg};
+                    $r->{nobrend} = 1 if $r->{str} =~ /\S$/;
+                    push @r, $r;
                 }
                 # и само совпадение
                 push @r, $get->(@m);
                 # а в @str отправим всё, что оказалось после совпадения
                 if ((my $b = $m[0]->{len}) < $s1->{len}) {
-                    unshift @str, $s1->substr($b, $s1->{len}-$b);
+                    my $r = $s1->substr($b, $s1->{len}-$b);
+                    $r->{nobrbeg} = 1 if $r->{str} =~ /^\S/;
+                    unshift @str, $r;
                 }
 
                 next top;
