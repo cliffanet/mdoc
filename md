@@ -5,6 +5,7 @@ use warnings;
 use utf8;
 
 use Getopt::Long;
+use Cwd qw(abs_path);
 
 my $lib;
 BEGIN {
@@ -23,7 +24,7 @@ my $cont    = paragraph($txt) || err();
    $cont    = txtstyle($cont);
 
 use Data::Dumper;
-print Dumper $yaml, $cont;#, $txt, $p;
+print Dumper $p, $yaml;#, $cont;#, $txt, $p;
 
 foreach my $k (qw/geometry/) {
     my $v = $yaml->{$k} || next;
@@ -36,7 +37,7 @@ foreach my $k (qw/geometry/) {
 }
 
 my $out = 'out::' . $p->{type};
-$out = $out->new(%$yaml);
+$out = $out->new(%$yaml, %$p);
 $out->make(@$cont);
 $out->save($p->{file}->[1]) || err('Can\'t save to \'%s\': %s', $p->{file}->[1], $!);
 
@@ -60,6 +61,10 @@ Options:
 
     -t, --type      Out type format (doc, pdf, html)
 
+    -r, --root-dir  Work directory for including files
+
+    -b, --base-uri  Base-prefix for relative links
+
 ";
     exit defined($s) ? -1 : ();
 }
@@ -79,11 +84,14 @@ sub err {
 
 sub arg {
     my $r = {};
-    my $h;
+    my ($h, $t, $root, $baseuri);
 
     GetOptions(
-        'help+'     => \$h,
-        '<>'        => sub { push @{ $r->{file}||=[] }, shift(); },
+        'help'          => \$h,
+        'type=s'        => \$t,
+        'root-dir=s'    => \$root,
+        'base-uri=s'    => \$baseuri,
+        '<>'            => sub { push @{ $r->{file}||=[] }, shift(); },
     ) || return usage('');
     return usage() if $h;
 
@@ -92,12 +100,31 @@ sub arg {
 
     (@{ $r->{file} } >= 2) ||
         return usage('Not defined destination file');
-    ($r->{file}->[1] =~ /\.([a-z]{2,5})$/i) ||
-        return usage('Can\'t check type of destination file');
+    
+    if ($t) {
+        $r->{type} = $t;
+    }
+    else {
+        ($r->{file}->[1] =~ /\.([a-z]{2,5})$/i) ||
+            return usage('Can\'t check type of destination file');
 
-    $r->{type} = lc $1;
+        $r->{type} = lc $1;
+    }
     eval("require out::$r->{type};") ||
         return usage('Type \'%s\' of destination file not found: %s', $r->{type}, $@);
+    
+    if ($root) {
+        $r->{root} = abs_path($root) ||
+            return usage('Work directory fail: %s', $root);
+    }
+    else {
+        my $path = abs_path($r->{file}->[0]);
+        if ($path && ($path =~ s/\/[^\/]+$//)) {
+            $r->{root} = $path;
+        }
+    }
+
+    $r->{'base-uri'} = $baseuri if $baseuri;
 
     return $r;
 }

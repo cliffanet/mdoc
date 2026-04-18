@@ -922,13 +922,13 @@ sub stage4draw {
     my $geom = $self->{geom};
     $page->size($geom->{size});
 
-    my $g = $page->graphics();
-    $g->move($geom->{x}, $geom->{y});
-    $g->hline($geom->{x} + $geom->{w});
-    $g->vline($geom->{y} + $geom->{h});
-    $g->hline($geom->{x});
-    $g->vline($geom->{y});
-    $g->stroke();
+    #my $g = $page->graphics();
+    #$g->move($geom->{x}, $geom->{y});
+    #$g->hline($geom->{x} + $geom->{w});
+    #$g->vline($geom->{y} + $geom->{h});
+    #$g->hline($geom->{x});
+    #$g->vline($geom->{y});
+    #$g->stroke();
 
     my $y = $geom->{y} + $geom->{h};
     my $s = $self->sumi('h');
