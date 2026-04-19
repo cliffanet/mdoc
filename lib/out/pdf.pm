@@ -1561,6 +1561,14 @@ sub new {
     );
 }
 
+sub dup {
+    my $self = shift()->SUPER::dup(@_);
+    # после разрезания на части через hsplit (если не влезло на странице),
+    # нужно дать пометку, что у первого элемента chld не нужно рисовать номер элемента списка.
+    $self->{isdup} = 1;
+    return $self;
+}
+
 sub stage2size {
     my ($self, $p, @p) = @_;
 
@@ -1582,14 +1590,16 @@ sub stage3layout {
 
 sub stage4draw {
     my ($self, $x, $y, $page, @p) = @_;
-
-    my $d = PageDraw->new($page);
-    $d->font(@{ $self->{font} });
-    $d->text(
-        $x + $self->{pad} - $self->{nw},
-        $y + $self->h() - $self->{font}->[1] - $self->{ulpos},
-        $self->{num}
-    );
+    
+    if (!$self->{isdup}) {
+        my $d = PageDraw->new($page);
+        $d->font(@{ $self->{font} });
+        $d->text(
+            $x + $self->{pad} - $self->{nw},
+            $y + $self->h() - $self->{font}->[1] - $self->{ulpos},
+            $self->{num}
+        );
+    }
 
     $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
 }
