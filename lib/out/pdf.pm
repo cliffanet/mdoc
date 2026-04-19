@@ -108,14 +108,14 @@ sub modifier {
 sub header {
     my ($self, %p) = @_;
 
-    my $c = DHeader->new($p{deep}, @{ $p{ content } });
+    my $c = DHeader->new($p{deep}, @{ $p{ text } });
     $self->{ctx}->add( $c );
 }
 
 sub hline {
     my ($self, %p) = @_;
 
-    my $c = DHLine->new(@{ $p{ title } });
+    my $c = DHLine->new(@{ $p{ text } || [] });
     $self->{ctx}->add( $c );
 }
 
@@ -128,9 +128,8 @@ sub code {
 sub textblock {
     my ($self, %p) = @_;
     
-    my $c = DTextBlock->new(@{ $p{ text } });
+    my $c = DTextBlock->new( $p{ text } );
     $self->{ctx}->add( $c );
-
 }
 
 sub quote {
@@ -150,14 +149,14 @@ sub listitem {
     $self->{ctx}->add( $c );
 
     local $self->{ctx} = $c;
-    $self->paragraph(content => $p{title});
+    #$self->paragraph(content => $p{title});
     $self->make(@{ $p{ content } }) if $p{ content };
 }
 
-sub paragraph {
+sub text {
     my ($self, %p) = @_;
 
-    my $c = DContent->new(@{ $p{ content } });
+    my $c = DContent->new(@{ $p{ text } });
     $self->{ctx}->add( $c );
 }
 
@@ -844,8 +843,8 @@ sub content {
     my $self = shift;
 
     foreach my $c (@_) {
-        if (ref($c) eq 'Str') {
-            my $s = DStr->new($c);
+        if (ref($c) eq 'txt') {
+            my $s = DTxt->new($c);
             # попадаются пустые строки, их наличие будет
             # мешать корректному распределению пробелов
             # между словами в строках, состоящих из смешанных
@@ -857,7 +856,7 @@ sub content {
             $self->toline( DContentStyle->new($c->{type}, @{ $c->{text} }) );
         }
         elsif ($c->{type} eq 'inlinecode') {
-            $self->toline( DICode->new($c->{str}) );
+            $self->toline( DICode->new($c->{text}) );
         }
         elsif ($c->{type} eq 'href') {
             $self->toline( DHref->new($c->{url}, @{ $c->{text} }) );
@@ -1083,7 +1082,7 @@ sub stage4draw {
 # ============================================================
 # ============================================================
 
-package DStr;
+package DTxt;
 use base 'DNodeH';
 
 sub new {
@@ -1096,17 +1095,17 @@ sub addwrd {
     my $self = shift;
 
     foreach my $s (@_) {
-        my $h = (ref($s) eq 'Str') || (ref($s) eq 'HASH');
+        my $h = (ref($s) eq 'txt') || (ref($s) eq 'HASH');
         my @wrd =
-            map { { str => $_ } }
+            map { { txt => $_ } }
             split(
                 /\s+/,
-                $h ? $s->{str} : $s
+                $h ? $s->{txt} : $s
             );
         @wrd || next;
 
         my $w = $wrd[0];
-        if ($w->{str} eq '') {
+        if ($w->{txt} eq '') {
             shift(@wrd);
         }
         elsif ($h && $s->{nobrbeg}) {
@@ -1115,7 +1114,7 @@ sub addwrd {
         }
 
         $w = $wrd[@wrd-1];
-        if ($w->{str} eq '') {
+        if ($w->{txt} eq '') {
             pop(@wrd);
         }
         elsif ($h && $s->{nobrend}) {
@@ -1151,7 +1150,7 @@ sub stage2size {
     my ($self, $p) = @_;
 
     foreach my $c (@{ $self->{chld} }) {
-        $c->{w} = $p->{style}->width($c->{str});
+        $c->{w} = $p->{style}->width($c->{txt});
     }
     $self->{h} = $p->{style}->height();
 
@@ -1196,12 +1195,12 @@ sub stage4draw {
         my $s = $self->sumi('w');
         while (my $c = $s->fetch()) {
             $x += $s->{byprv};
-            $d->text($x, $y - $self->{ulpos}, $c->{str});
+            $d->text($x, $y - $self->{ulpos}, $c->{txt});
         }
     }
     else {
         # если текст не надо растягивать, выводим его простой строкой с пробелами
-        $d->text($x + ($self->{wbeg}||0), $y - $self->{ulpos}, join(' ', map { $_->{str} } @{ $self->{chld} }));
+        $d->text($x + ($self->{wbeg}||0), $y - $self->{ulpos}, join(' ', map { $_->{txt} } @{ $self->{chld} }));
     }
 }
 
@@ -1232,7 +1231,7 @@ sub stage2size {
 # ============================================================
 # ============================================================
 package DICode;
-use base 'DStr';
+use base 'DTxt';
 
 sub stage2size {
     my ($self, $p, @p) = @_;
@@ -1303,7 +1302,7 @@ sub new {
 
     my $self = bless({ url => $url }, $class);
     $self->{title} = $title if $title;
-    $self->{alt} = DStr->new('[' . $alt . ']') if $alt;
+    $self->{alt} = DTxt->new('[' . $alt . ']') if $alt;
 
     return $self;
 }
@@ -1441,9 +1440,13 @@ sub new {
 sub addstr {
     my $self = shift;
 
-    $self->add(
-        map { { str => (ref eq 'Str') || (ref eq 'HASH') ? $_->{str} : $_ } } @_
-    );
+    foreach (@_) {
+        my $txt = (ref eq 'txt') || (ref eq 'HASH') ? $_->{txt} : $_;
+        foreach my $str (split(/\n/, $txt)) {
+            $str =~ s/\r$//;
+            $self->add({ txt => $str });
+        }
+    }
 }
 
 sub stage2size {
@@ -1461,7 +1464,7 @@ sub stage2size {
     $self->{hspc} = $style->height() * 0.2;
 
     foreach my $c (@{ $self->{chld} }) {
-        $c->{w} = $style->width($c->{str});
+        $c->{w} = $style->width($c->{txt});
         $c->{h} = $style->height();
     }
 }
@@ -1491,7 +1494,7 @@ sub stage4draw {
     my $s = $self->sumi('h');
     while (my $c = $s->fetch()) {
         $y -= $s->{byprv};
-        $d->text($x, $y - $s->{sz} - $self->{ulpos}, $c->{str});
+        $d->text($x, $y - $s->{sz} - $self->{ulpos}, $c->{txt});
     }
 
     $t->fill_color('#000');

@@ -159,14 +159,14 @@ sub header {
 
     my $ln = line($s, 1, 1) || return;
     match($ln, my $p, my $t, qr/ {0,3}(\#+)\s+(.*)$/) || return;
-    my $cont = inline($t) || return;
+    my $text = inline($t) || return;
 
     $_[0] = $s;
     return {
         type    => 'header',
         pos     => [$p->pos()],
         deep    => length($p->{txt}),
-        text    => $cont
+        text    => $text
     };
 }
 
@@ -288,14 +288,14 @@ sub hline2 {
     my $text = text($s) || return;
 
     my $ln = line($s, 1) || return;
-    match($ln, my $beg, qr/ {0,3}(-+)/) || return;
+    match($ln, qr/ {0,3}-+/) || return;
     $ln->empty() || return;
 
     $_[0] = $s;
     return {
         type    => 'hline',
-        pos     => [$beg->pos()],
-        text    => $text,
+        pos     => $text->{pos},
+        text    => $text->{text},
     };
 }
 
@@ -370,7 +370,7 @@ sub textblock {
     my ($s) = @_;
 
     my @pos = $s->pos();
-    my $ind = indent($s, qr/ {0,3}\t| {4}/) || return;
+    my $ind = indent($s, qr/ {0,3}\t| {4}/, 1) || return;
     $ind->{txt} =~ s/\n$//;
 
     $_[0] = $s;
@@ -693,6 +693,7 @@ sub inline {
         if ($f) {   # сработал один из шаблонов
             # $txt - это текст перед найденным элементом
             if ($txt->{txt} ne '') {
+                $txt->{nobrend} = 1 if $txt->{txt} =~ /\S$/;
                 push @$cont, $txt;
             }
             $txt = $s->copy(txt => ''); # новая точка старта для $txt
@@ -704,6 +705,7 @@ sub inline {
 
         # шаблоны не сработали, двигаемся к следующему символу
         if (my $s1 = match($s, qr/(?:.|\n)/)) {  # . не срабатывает на \n
+            $txt->{nobrbeg} = 1 if ($txt->{txt} eq '') && ($s1->{txt} =~ /^\S/);
             $txt->{txt} .= $s1->{txt};
         }
         else {
@@ -753,7 +755,7 @@ sub inline_italic {
 
     $_[0] = $s;
     return {
-        type    => 'bold',
+        type    => 'italic',
         text    => $text
     };
 }
