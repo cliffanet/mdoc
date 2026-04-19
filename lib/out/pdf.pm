@@ -6,6 +6,9 @@ use warnings;
 use base 'out';
 
 use PDF::API2;
+use Cwd qw(abs_path);
+use Encode;
+use LWP::UserAgent;
 
 use constant mm2pix => 2.8346904;
 
@@ -36,8 +39,8 @@ sub new {
 
     my $geom = sub {
         my $v = ($o->{geometry} || {})->{'margin-' . shift()};
-        $v = ($o->{geometry} || {})->{margin} if !defined($v);
-        $v = shift() if !defined($v);
+        $v //= ($o->{geometry} || {})->{margin};
+        $v //= shift();
         return int($1 * mm2pix + .5)        if $v =~ /^([\d\.]+)mm$/i;
         return int($1 * mm2pix * 10 + .5)   if $v =~ /^([\d\.]+)cm$/i;
         return int($v + .5);
@@ -74,7 +77,7 @@ sub data {
     $self->{doc}->stage3layout('A4', %{ $self->{margin} });
 
     # И, наконец, выводим содержимое
-    $self->{doc}->stage4draw( $self->{pdf} );
+    $self->{doc}->stage4draw( $self->{pdf}, $self->{opt} );
     
     return $self->{pdf}->to_string();
 }
@@ -87,12 +90,72 @@ sub _font {
     return $fall->{ $name } ||= $self->{pdf}->font($name);
 }
 
+sub _image_www {
+    my ($self, $url) = @_;
+
+    $ENV{PERL_LWP_SSL_VERIFY_HOSTNAME} = 0;
+
+    my $req = eval { HTTP::Request->new(GET => $url); };
+    $req || return;
+
+    my $ua = LWP::UserAgent->new;
+    my $r = $ua->request($req);
+    if (!$r->is_success()) {
+        #print "[GET] $url: status=".$r->status_line()."\n";
+        return;
+    }
+
+    my $ctype = $r->header('Content-type');
+    my $fmt = $ctype && ($ctype =~ /^image\/(.+)$/) ? $1 : '';
+
+    my $d = $r->content();
+    open(my $fh, '<', \$d) || return;
+
+    return $fh, $fmt;
+}
+
+sub _image_file {
+    my ($self, $url) = @_;
+
+    Encode::_utf8_off($url);
+    $url =~ tr/+/ /;
+    $url =~ s/%([\da-fA-F]{2})/chr (hex ($1))/eg;
+
+    my $fmt =
+        $url =~ /\.jpe?g$/i     ? 'jpeg' :
+        $url =~ /\.png$/i       ? 'png'  :
+        $url =~ /\.gif$/i       ? 'gif'  :
+        $url =~ /\.tiff?$/i     ? 'tiff' :
+        $url =~ /\.p[bgp]m$/i   ? 'pnm'  : '';
+
+    my $root = $self->{opt}->{'root-dir'} // $self->{opt}->{'root'};
+    if (($url !~ /^\//) && $root) {
+        # надо согласовать utf8-флаг, т.к. переменные могут браться из файла и из командной строки,
+        # из-за чего могут не совпадать и при соединении будет неконтролируемая конвертация
+        Encode::_utf8_off($root);
+        $url = abs_path($root . '/' . $url) || return;
+    }
+    open(my $fh, '<', $url) || return;
+
+    return $fh, $fmt;
+}
+
 sub _image {
-    my ($self, $fname) = @_;
+    my ($self, $url) = @_;
     
     my $imgall = ($self->{imgall} ||= {});
+    return $imgall->{$url} if exists $imgall->{$url};
 
-    return $imgall->{$fname} ||= $self->{pdf}->image($fname);
+    my ($fh, $fmt) = $url =~ /^https?\:\/\//i ?
+        $self->_image_www($url) :
+        $self->_image_file($url);
+    
+    if (!$fh) {
+        $imgall->{$url} = undef;
+        return;
+    }
+
+    return $imgall->{$url} = $self->{pdf}->image($fh, format => $fmt);
 }
 
 sub modifier {
@@ -922,7 +985,7 @@ sub stage3layout {
 }
 
 sub stage4draw {
-    my ($self, $pdf) = @_;
+    my ($self, $pdf, @p) = @_;
     
     my $page = $pdf->page();
     my $geom = $self->{geom};
@@ -940,7 +1003,7 @@ sub stage4draw {
     my $s = $self->sumi('h');
     while (my $c = $s->fetch()) {
         $y -= $s->{byprv};
-        $c->stage4draw($geom->{x}, $y - $s->{sz}, $page, $pdf);
+        $c->stage4draw($geom->{x}, $y - $s->{sz}, $page, $pdf, @p);
     }
 }
 
@@ -1282,7 +1345,7 @@ sub stage2size {
 }
 
 sub stage4draw {
-    my ($self, $x, $y, $d, $page, @p) = @_;
+    my ($self, $x, $y, $d, $page, $pdf, $opt, @p) = @_;
 
     my ($w, $h) = ($self->w(), $self->h());
 
@@ -1292,17 +1355,29 @@ sub stage4draw {
     $g->hline($x + $w);
     $g->stroke();
 
-    $self->SUPER::stage4draw($x, $y, $d, $page, @p);
+    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf, $opt, @p);
 
     my $an = $page->annotation();
     $an->rect($x, $y, $x + $w, $y + $h);
-    $an->uri($self->{url});
+
+    my $url = $self->{url};
+    my $base = $opt->{'base-uri'} // $opt->{'baseuri'};
+    Encode::_utf8_off($url);
+
+    if (($url !~ /^http?s\:\/\//i) && $base) {
+        # надо согласовать utf8-флаг, т.к. переменные могут браться из файла и из командной строки,
+        # из-за чего могут не совпадать и при соединении будет неконтролируемая конвертация
+        Encode::_utf8_off($base);
+        $url = $base . $url;
+    }
+    $an->uri($url);
 }
 
 
 # ============================================================
 # ============================================================
 package DImage;
+use base 'DNode';
 
 sub new {
     my ($class, $url, $title, $alt) = @_;
