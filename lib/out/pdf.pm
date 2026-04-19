@@ -490,13 +490,20 @@ sub fetch {
     my $p = $self->{n} > 0 ? $self->{chld}->[ $self->{n} - 1 ] : undef;
     $self->{n} ++;
 
+    my $f = $self->{f};
+    # Поля woff/hoff - это дополнительное смещение перед элементом, если он не первый в списке.
+    # В отличие от wbeg/hbeg (безусловный отступ от начала, применяются в таблицах и других
+    # рамочных элементах), применение поля woff/hoff зависит от того, является ли он первым
+    # в списке chld родителя. Применяется для header.
+    # Другими словами это аналог wspc/hspc, но применяется не между chld, а для себя.
+    my $szoff = $c->{$f.'off'}||0;
+
     $self->{byprv} =
         $p ?
-            $self->{sz} + ($p->{nospend} || $c->{nospbeg} ? 0 : $self->{spc} + $self->{spa}) :
+            $szoff + $self->{sz} + ($p->{nospend} || $c->{nospbeg} ? 0 : $self->{spc} + $self->{spa}) :
             $self->{szbeg};
     $self->{bybeg} += $self->{byprv};
 
-    my $f = $self->{f};
     $self->{sz} = ref($c) eq 'HASH' ? $c->{$f}||0 : $c->$f($self->{spa});
     
     $self->{szfull} = $self->{bybeg} + $self->{sz} + $self->{szend};
@@ -1376,6 +1383,8 @@ sub stage2size {
     my $sz = ($self->{deep} > 0) && ($self->{deep} <= @size) ? $size[ $self->{deep} - 1 ] : $size[ @size-1 ];
 
     local $p->{style} = $p->{style}->clone(bold => 1, size => $sz);
+    $self->{hoff} = #$self->{deep} > 2 ? 0 : 
+                    $p->{style}->height() * 0.7;
     $self->{hln} = $self->{deep} > 2 ? 0 : $p->{style}->height() * 0.1;
     $self->{hend} = $self->{hln};
 

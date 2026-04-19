@@ -27,8 +27,8 @@ my $yaml = yaml($s) || exit -1;
 
 my $cont = prs::doc($s) || err(prs::err);
 
-use Data::Dumper;
-print Dumper $yaml, $cont;
+#use Data::Dumper;
+#print Dumper $yaml, $cont;
 
 my $out = 'out::' . $p->{type};
 $out = $out->new(%$yaml, %$p);
