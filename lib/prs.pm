@@ -116,6 +116,28 @@ sub str {
     return $s;
 }
 
+sub contadd {
+    my ($c, $e) = @_;
+
+    if ($e->{type} eq 'listitem') {
+        my ($prv) = @$c ? $c->[ @$c-1 ] : undef;
+        if (
+                $prv && ($prv->{type} eq 'list') &&
+                ($prv->{mode} eq $e->{mode})
+            ) {
+            push @{ $prv->{content} }, $e;
+            return $c;
+        }
+        $e = {
+            type    => 'list',
+            mode    => $e->{mode},
+            content => [$e]
+        };
+    }
+    push @$c, $e;
+    $c;
+}
+
 
 # ----------------------------------------------------------------------
 # ---
@@ -128,12 +150,12 @@ sub doc {
 
     while (!$s->empty()) {
         my $e =
-            modificator($s) ||  # Специальные модификаторы и
-            header($s) ||       # заголовки могут быть только на верхнем уровне
-            paragraph($s);
+            modificator ($s) || # Специальные модификаторы и
+            header      ($s) || # заголовки могут быть только на верхнем уровне
+            paragraph   ($s);
         
         $e || return err($s->{pos}, 'doc > Can\t parse symbol');
-        push @$content, $e;
+        contadd($content, $e);
     }
 
     $_[0] = $s;
@@ -183,7 +205,7 @@ sub level {
     while (!$s->empty()) {
         my $e = paragraph($s);
         $e || return err($s->{pos}, 'level > Can\t parse symbol');
-        push @$content, $e;
+        contadd($content, $e);
     }
 
     $_[0] = $s;

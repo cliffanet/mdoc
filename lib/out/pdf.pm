@@ -35,7 +35,7 @@ sub new {
             )
         );
     }
-    $pdf->producer('mdoc');
+    $pdf->producer('mdoc v1.0');
 
     my $geom = sub {
         my $v = ($o->{geometry} || {})->{'margin-' . shift()};
@@ -202,6 +202,12 @@ sub quote {
     $self->{ctx}->add( $c );
 
     local $self->{ctx} = $c;
+    $self->make(@{ $p{ content } });
+}
+
+sub list {
+    my ($self, %p) = @_;
+
     $self->make(@{ $p{ content } });
 }
 

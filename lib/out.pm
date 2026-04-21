@@ -13,7 +13,7 @@ sub make {
     my $self = shift;
 
     foreach my $p (@_) {
-        if (ref($p) eq 'Str') {
+        if (ref($p) eq 'txt') {
             $self->str(%$p);
         }
         elsif (ref($p) eq 'HASH') {
