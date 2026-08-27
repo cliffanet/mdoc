@@ -22,10 +22,16 @@ sub data {
     my $out = $self->{doc}->out();
 
     if (my $fname = $self->{opt}->{'html-template'}) {
-        open(my $fh, '<', $fname) || return;
-        local $/ = undef;
-        my $tmpl = <$fh>;
-        close $fh;
+        my $tmpl;
+        if (open(my $fh, '<:raw', $fname)) {
+            local $/ = undef;
+            $tmpl = <$fh>;
+            close $fh;
+        }
+        else {
+            print STDERR 'Can\' open \''.$fname.'\': ' . $! . "\n";
+            return;
+        }
 
         my %opt = %{ $self->{opt} };
         Encode::_utf8_off($_) foreach values %opt;
@@ -38,10 +44,25 @@ sub data {
         my $created = sprintf('%04d-%02d-%02d %2d:%02d:%02d', $year+1900, $mon+1, $mday, $hour, $min, $sec);
         $tmpl =~ s/%created%/$created/ige;
 
+        my $mtime = (stat $self->{opt}->{src})[9];
+        ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst) = gmtime($mtime);
+        my $fchanged = sprintf('%04d-%02d-%02d %2d:%02d:%02d', $year+1900, $mon+1, $mday, $hour, $min, $sec);
+        $tmpl =~ s/%fchanged%/$fchanged/ige;
+
         my $tmplpath = $fname;
         $tmplpath =~ s/[^\/\\]+$//;
         #$tmplpath =~ s/[\/\\]$//;
         $tmpl =~ s/%tmplpath%/$tmplpath/ige;
+
+        my %var = %{ $opt{var}||{} };
+        Encode::_utf8_off($_) foreach values %var;
+        $tmpl =~ s/%var\(([a-zA-Z0-9_\-]+)\)%/$var{$1}\/\/''/ige;
+
+        if (my $fname = $opt{src} || $opt{dst}) {
+            $fname =~ s/^.*[\/\\]//;
+            $fname =~ s/\.(md|txt|html|pdf)$//i;
+            $tmpl =~ s/%fname%/$fname/ige;
+        }
 
         $tmpl =~ s/%CONTENT%/$out/ige;
         $out = $tmpl;
@@ -99,7 +120,7 @@ sub code {
     # но пока просто доблируем работу textblock
     
     $self->{ctx}->add(
-        '<pre class="code"><code>',#."\n",
+        '<pre class="code"><code class="block">',#."\n",
         $self->subnode( $p{ text } ),
         '</code></pre>',
     );
@@ -109,7 +130,7 @@ sub textblock {
     my ($self, %p) = @_;
     
     $self->{ctx}->add(
-        '<pre class="textblock"><code>',#."\n",
+        '<pre class="textblock"><code class="block">',#."\n",
         $self->subnode( $p{ text } ),
         '</code></pre>',
     );
@@ -148,7 +169,10 @@ sub listitem {
         '<li'.$v.'>',
         $f->{type} eq 'text' ? (
             # первый text не будем заворачивать в <p>
+            '<div>', # иногда всё-таки требуется выделять первый абзац,
+                     # поэтому хоть в какой-нибудь блок его завенуть надо
             $self->subnode( @{ $f->{text} } ),
+            '</div>',
             $self->subnode( @content )
         ) : (
             $self->subnode( @{ $p{ content } } )
@@ -171,8 +195,8 @@ sub table {
     my ($self, %p) = @_;
     
     my @hdr = ();
-    my @w = @{ $p{width} };
-    my @a = @{ $p{align} };
+    my @w = @{ $p{width}||[] };
+    my @a = @{ $p{align}||[] };
     foreach my $h (@{ $p{hdr}||[] }) {
         my $al = shift @a;
         my $align =
@@ -193,9 +217,9 @@ sub table {
     my @body = ();
     foreach my $row (@{ $p{row}||[] }) {
         push @body, '<tr>';
-        my @a = @{ $p{align} };
+        my @a = @{ $p{align}||[] };
         foreach my $col (@$row) {
-            my $al = shift @a;
+            my $al = shift(@a) // 'l';
             my $align =
                 $al eq 'r'  ? ' class="align-right"' :
                 $al eq 'c'  ? ' class="align-center"' :
@@ -257,7 +281,7 @@ sub inlinecode {
     my ($self, %p) = @_;
     
     $self->{ctx}->add(
-        '<code>',
+        '<code class="inline">',
         $p{ text },
         '</code>',
     );

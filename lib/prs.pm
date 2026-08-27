@@ -756,7 +756,8 @@ sub inline_bold {
             inline($s, qr/__/) :
         match($s, qr/\*\*/) ?
             inline($s, qr/\*\*/) :
-            return;
+            undef;
+    $text || return;
 
     $_[0] = $s;
     return {

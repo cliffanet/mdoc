@@ -12,7 +12,7 @@ use LWP::UserAgent;
 
 use constant mm2pix => 2.8346904;
 
-PDF::API2->add_to_font_path('.', './fonts', '/System/Library/Fonts', '/System/Library/Fonts/Supplemental', '/Library/Fonts', '~/Library/Fonts');
+PDF::API2->add_to_font_path($INC[0], $INC[0].'/fonts', $INC[1], $INC[1].'/fonts', '/System/Library/Fonts', '/System/Library/Fonts/Supplemental', '/Library/Fonts', '~/Library/Fonts');
 
 sub new {
     my $self = shift()->SUPER::new(@_);
