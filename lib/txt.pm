@@ -15,13 +15,14 @@ use utf8;
 =cut
 
 sub new {
-    my ($class, $txt, $p) = @_;
+    my ($class, $txt, $p, $prev) = @_;
 
     $txt = '' if !defined($txt);
     
     return bless {
         pos => $p || txt::posinf->new(),
         txt => $txt,
+        defined($prev) ? (prev => $prev) : (),
     }, $class;
 }
 
@@ -87,10 +88,11 @@ sub match {
         defined($r) || next;
         my $i = index($m, $r, $beg);
         $beg = $i;
+        my $prev;
         my $pos = $i > 0 ?
-            $s->{pos}->inctxt( CORE::substr($m, 0, $i) ) :
+            $s->{pos}->inctxt( $prev = CORE::substr($m, 0, $i) ) :
             $s->{pos}->copy();
-        $r = txt->new($r, $pos);
+        $r = txt->new($r, $pos, ($s->{prev} // '') . ($prev // ''));
     }
 
     pop(@r) while @r && !defined($r[@r-1]);
@@ -102,7 +104,7 @@ sub match {
 
     return
         $found,
-        txt->new($p, $pos), # tail
+        txt->new($p, $pos, ($s->{prev} // '') . $m), # tail
         @r;                 # frag
 }
 

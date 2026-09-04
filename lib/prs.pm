@@ -706,8 +706,10 @@ sub inline {
         my @pos = $s->pos();
 
         my $f =
-            inline_bold     ($s) ||
-            inline_italic   ($s) ||
+            inline_bold1    ($s) ||
+            inline_bold2    ($s) ||
+            inline_italic1  ($s) ||
+            inline_italic2  ($s) ||
             inline_code     ($s) ||
             inline_image    ($s) ||
             inline_href     ($s) ||
@@ -748,16 +750,11 @@ sub inline {
     return $cont;
 }
 
-sub inline_bold {
+sub inline_bold1 {
     my ($s) = @_;
 
-    my $text =
-        match($s, qr/__/) ?
-            inline($s, qr/__/) :
-        match($s, qr/\*\*/) ?
-            inline($s, qr/\*\*/) :
-            undef;
-    $text || return;
+    match($s, qr/__/) || return;
+    my $text = inline($s, qr/__/) || return;
 
     $_[0] = $s;
     return {
@@ -766,15 +763,40 @@ sub inline_bold {
     };
 }
 
-sub inline_italic {
+sub inline_bold2 {
     my ($s) = @_;
 
-    my $text =
-        match($s, qr/_/) ?
-            inline($s, qr/_/) :
-        match($s, qr/\*/) ?
-            inline($s, qr/\*/) :
-            return;
+    match($s, qr/\*\*/) || return;
+    my $text = inline($s, qr/\*\*/) || return;
+
+    $_[0] = $s;
+    return {
+        type    => 'bold',
+        text    => $text
+    };
+}
+
+sub inline_italic1 {
+    my ($s) = @_;
+    
+    return if $s->{prev} && ($s->{prev} =~ /[a-zA-Z0-9а-яА-Я\_]$/);
+    match($s, qr/_/) || return;
+    return if $s->{txt} =~ /^\_/;
+    my $text = inline($s, qr/_\b/) || return;
+
+    $_[0] = $s;
+    return {
+        type    => 'italic',
+        text    => $text
+    };
+}
+
+sub inline_italic2 {
+    my ($s) = @_;
+
+    match($s, qr/\*/) || return;
+    return if $s->{txt} =~ /^\*/;
+    my $text = inline($s, qr/\*/) || return;
 
     $_[0] = $s;
     return {
