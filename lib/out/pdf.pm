@@ -56,6 +56,9 @@ sub new {
     $self->{ctx} = DPage->new();
     $self->{doc}->add($self->{ctx});
     $self->{style} = SStyle->new($self, font => 'Arial.ttf', size => 11);
+    if ($o->{'page-number'}) {
+        $self->{doc}->{style_pnum} = SStyle->new($self, font => 'Arial.ttf', size => 9);
+    }
 
     return $self;
 }
@@ -973,7 +976,26 @@ sub stage3layout {
     $self->layout(h => $geom{h});
 }
 
-sub stage4draw { shift()->DNode::stage4draw(@_) }
+sub stage4draw {
+    my $self = shift();
+
+    my $pns = $self->{style_pnum};
+    my $pnfont = $pns ? [ $pns->font() ] : undef;
+
+    my $n = 0;
+    my $total = @{ $self->{chld} };
+    foreach my $c (@{ $self->{chld} }) {
+        $n++;
+        $c->{pnum}      = $n;
+        $c->{ptotal}    = $total;
+        if ($pnfont) {
+            $c->{pnfont}= $pnfont;
+            $c->{pnw}   = $pns->width($n);
+        }
+    }
+
+    return $self->DNode::stage4draw(@_)
+}
 
 
 # ============================================================
@@ -1005,11 +1027,32 @@ sub stage4draw {
     #$g->vline($geom->{y});
     #$g->stroke();
 
+    # Основное содержимое страницы
     my $y = $geom->{y} + $geom->{h};
     my $s = $self->sumi('h');
     while (my $c = $s->fetch()) {
         $y -= $s->{byprv};
         $c->stage4draw($geom->{x}, $y - $s->{sz}, $page, $pdf, @p);
+    }
+    # Номер страницы
+    if (my $font = $self->{pnfont}) {
+        my ($px, $py, $px2, $py2) =
+            # Повторное получение координат страницы, чтобы
+            # положение номера центровалось относительно всей страницы,
+            # без учёта margin - так лучше смотрится
+            PDF::API2::Page::_to_rectangle($geom->{size});
+
+        # Центрируем номер по ширине физической страницы.
+        my $x = $px + ($px2 - $px - $self->{pnw}) / 2;
+
+        # geom->{y} — нижняя граница области основного текста.
+        # Номер располагаем примерно по центру нижнего поля.
+        my $footerh = $geom->{y} - $py;
+        my $y = $py + $footerh / 2;
+
+        my $d = PageDraw->new($page);
+        $d->font(@$font);
+        $d->text($x, $y, $self->{pnum});
     }
 }
 
@@ -1504,7 +1547,13 @@ package DHLine;
 use base 'DHeader';
 
 sub new {
-    return shift()->SUPER::new(2, @_);
+    my $self = shift()->SUPER::new(2, @_);
+
+    if ($self->empty()) {
+        delete $self->{nobrend};
+    }
+
+    return $self;
 }
 
 sub stage2size {

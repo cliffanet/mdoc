@@ -51,13 +51,16 @@ sub usage {
     $0 [options] source destination
 
 Options:
-    -h, --help      This usage message
+    -h, --help          This usage message
 
-    -t, --type      Out type format (doc, pdf, html)
+    -t, --type          Out type format (doc, pdf, html)
 
-    -r, --root-dir  Work directory for including files
+    -r, --root-dir      Work directory for including files
 
-    -b, --base-uri  Base-prefix for relative links
+    -b, --base-uri      Base-prefix for relative links
+
+    --page-number       Print page numbers in PDF
+    --no-page-number    Disable page numbers
 
 ";
     exit defined($s) ? -1 : ();
@@ -82,13 +85,14 @@ sub err {
 
 sub arg {
     my $r = {};
-    my ($h, $t, $root, $baseuri, @file);
+    my ($h, $t, $root, $baseuri, $pagenumber, @file);
 
     GetOptions(
         'help'          => \$h,
         'type=s'        => \$t,
         'root-dir=s'    => \$root,
         'base-uri=s'    => \$baseuri,
+        'page-number!'  => \$pagenumber,
         '<>'            => sub { push @file, shift(); },
     ) || return usage('');
     return usage() if $h;
@@ -125,6 +129,8 @@ sub arg {
     }
 
     $r->{'base-uri'} = $baseuri if $baseuri;
+
+    $r->{'page-number'} = $pagenumber if defined $pagenumber;
 
     return $r;
 }
