@@ -295,6 +295,36 @@ sub italic {
     );
 }
 
+sub strike {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add(
+        '<del>',
+        $self->subnode( @{ $p{ text } } ),
+        '</del>',
+    );
+}
+
+sub underline {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add(
+        '<u>',
+        $self->subnode( @{ $p{ text } } ),
+        '</u>',
+    );
+}
+
+sub mark {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add(
+        '<mark>',
+        $self->subnode( @{ $p{ text } } ),
+        '</mark>',
+    );
+}
+
 sub inlinecode {
     my ($self, %p) = @_;
     

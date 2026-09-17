@@ -971,7 +971,13 @@ sub content {
             next if $s->empty();
             $self->toline($s);
         }
-        elsif (($c->{type} eq 'bold') || ($c->{type} eq 'italic')) {
+        elsif (
+                ($c->{type} eq 'bold') ||
+                ($c->{type} eq 'italic') ||
+                ($c->{type} eq 'strike') ||
+                ($c->{type} eq 'underline') ||
+                ($c->{type} eq 'mark')
+            ) {
             $self->toline( DContentStyle->new($c->{type}, @{ $c->{text} }) );
         }
         elsif ($c->{type} eq 'inlinecode') {
@@ -1383,8 +1389,9 @@ sub stage4draw {
 package DContentStyle;
 use base 'DNodeH', 'DParserH';
 
-# Группа inline-элементов с локальным стилем bold или italic. При измерении
-# клонирует текущий стиль и передаёт изменённую копию дочерним узлам.
+# Группа inline-элементов с локальным стилем. При измерении bold/italic
+# изменяют шрифт, strike/underline добавляют линии, а mark — фон с полями,
+# равными полям строчного кода.
 sub new {
     my $self = shift()->SUPER::new(
         style => shift()
@@ -1399,7 +1406,39 @@ sub stage2size {
     local $p->{style} = $p->{style}->clone($self->{style} => 1);
     $self->{wspc} = $p->{style}->width(' ');
 
+    if ($self->{style} eq 'mark') {
+        $self->{wbeg} = $p->{style}->width(' ');
+        $self->{wend} = $self->{wbeg};
+        $self->{vpad} = $p->{style}->height() * 0.2 - 1;
+    }
+
     $self->SUPER::stage2size($p, @p);
+}
+
+# Маркерный фон с полями строчного кода рисуется до содержимого, а линии —
+# после, чтобы вложенные фоны не перекрывали подчёркивание или зачёркивание.
+sub stage4draw {
+    my ($self, $x, $y, $d, @p) = @_;
+
+    my ($w, $h) = ($self->w(), $self->h());
+
+    if ($self->{style} eq 'mark') {
+        $d->gfxcol('#ffff00');
+        my $g = $d->gfx();
+        $g->rect($x, $y - $self->{vpad}, $w, $h + $self->{vpad}*2);
+        $g->fill();
+    }
+
+    $self->SUPER::stage4draw($x, $y, $d, @p);
+
+    if (($self->{style} eq 'underline') || ($self->{style} eq 'strike')) {
+        $d->gfxcol('#000');
+        my $g = $d->gfx();
+        my $ly = $self->{style} eq 'underline' ? $y : $y + $h / 2;
+        $g->move($x, $ly);
+        $g->hline($x + $w);
+        $g->stroke();
+    }
 }
 
 
@@ -1435,8 +1474,8 @@ sub stage4draw {
 package DHref;
 use base 'DNodeH', 'DParserH';
 
-# Ссылка с форматируемым inline-содержимым. При отрисовке добавляет подчёркивание
-# и PDF-аннотацию, дополняя относительный URL настройкой base-uri.
+# Ссылка с форматируемым inline-содержимым. После содержимого рисует
+# подчёркивание и добавляет PDF-аннотацию, дополняя URL настройкой base-uri.
 sub new {
     my $self = shift()->SUPER::new(
         url => shift()
@@ -1458,13 +1497,13 @@ sub stage4draw {
 
     my ($w, $h) = ($self->w(), $self->h());
 
+    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf, $opt, @p);
+
     $d->gfxcol('#000');
     my $g = $d->gfx();
     $g->move($x, $y);
     $g->hline($x + $w);
     $g->stroke();
-
-    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf, $opt, @p);
 
     my $an = $page->annotation();
     $an->rect($x, $y, $x + $w, $y + $h);

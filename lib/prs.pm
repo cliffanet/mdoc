@@ -734,6 +734,9 @@ sub inline {
         my @pos = $s->pos();
 
         my $f =
+            inline_strike   ($s) ||
+            inline_underline($s) ||
+            inline_mark     ($s) ||
             inline_bold1    ($s) ||
             inline_bold2    ($s) ||
             inline_italic1  ($s) ||
@@ -780,6 +783,45 @@ sub inline {
 
 # Распознаватели inline-элементов изменяют исходный txt-объект только при полном
 # совпадении и возвращают элемент для общего массива содержимого inline().
+sub inline_strike {
+    my ($s) = @_;
+
+    match($s, qr/\~\~/) || return;
+    my $text = inline($s, qr/\~\~/) || return;
+
+    $_[0] = $s;
+    return {
+        type    => 'strike',
+        text    => $text
+    };
+}
+
+sub inline_underline {
+    my ($s) = @_;
+
+    match($s, qr/\+\+/) || return;
+    my $text = inline($s, qr/\+\+/) || return;
+
+    $_[0] = $s;
+    return {
+        type    => 'underline',
+        text    => $text
+    };
+}
+
+sub inline_mark {
+    my ($s) = @_;
+
+    match($s, qr/\=\=/) || return;
+    my $text = inline($s, qr/\=\=/) || return;
+
+    $_[0] = $s;
+    return {
+        type    => 'mark',
+        text    => $text
+    };
+}
+
 sub inline_bold1 {
     my ($s) = @_;
 
