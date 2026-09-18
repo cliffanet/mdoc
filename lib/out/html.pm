@@ -267,12 +267,32 @@ sub table {
 #   inline
 #   -------------
 
+# Кодирует текст для безопасного размещения в HTML-тексте или атрибуте.
+sub html_escape {
+    my $s = shift // '';
+
+    $s =~ s/&/&amp;/g;
+    $s =~ s/</&lt;/g;
+    $s =~ s/>/&gt;/g;
+    $s =~ s/\"/&quot;/g;
+    $s =~ s/\'/&#39;/g;
+
+    return $s;
+}
+
 # Строчные обработчики добавляют текст или HTML-теги в текущий узел; вложенная
-# разметка форматируемых элементов также собирается через subnode().
+# разметка форматируемых элементов также собирается через subnode(). Элемент
+# escape кодируется отдельно, чтобы обычный текст сохранил прежнее поведение.
 sub str {
     my ($self, %p) = @_;
 
     $self->{ctx}->add( $p{txt} );
+}
+
+sub escape {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add( html_escape($p{text}) );
 }
 
 sub bold {
@@ -335,16 +355,21 @@ sub inlinecode {
     );
 }
 
+# Выводит изображение, кодируя URL и существующий заголовок для HTML-атрибутов.
 sub image {
     my ($self, %p) = @_;
 
-    my $title = $p{title} ? ' alt="'.$p{title}.'" title="'.$p{title}.'"' : '';
+    my $url = html_escape($p{url});
+    my $title = $p{title} ? html_escape($p{title}) : '';
+    my $attr = $title ? ' alt="'.$title.'" title="'.$title.'"' : '';
     
     $self->{ctx}->add(
-        '<img src="'.$p{url}.'"'.$title.'>',
+        '<img src="'.$url.'"'.$attr.'>',
     );
 }
 
+# Выводит ссылку, сначала дополняя относительный URL настройкой base-uri,
+# а затем кодируя готовое значение для HTML-атрибута.
 sub href {
     my ($self, %p) = @_;
 
@@ -352,6 +377,7 @@ sub href {
     if (($url !~ /^[a-z]{2,5}\:\/\//i) && (my $base = $self->{opt}->{'html-base-uri'})) {
         $url = $base . $url;
     }
+    $url = html_escape($url);
     
     $self->{ctx}->add(
         '<a href="'.$url.'">',

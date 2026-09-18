@@ -24,6 +24,11 @@ use utf8;
 # шаблон учитывает все варианты начала разных нетекстовых блоков.
 my $textend = qr/(?: {0,3}\t| {4})? {0,3}(?:[\*\-]|\d+\.)[ \t]+| {0,3}(?:___+|-+)?[ \t\r]*(?:\n|$)| {0,3}(?:\`\`\`)/;
 
+# ASCII-знаки пунктуации, которые CommonMark разрешает экранировать обратной
+# косой чертой. $escaped дополнительно включает саму косую черту перед знаком.
+my $punctuation = qr/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/;
+my $escaped = qr/\\$punctuation/;
+
 =pod
 
     Парсеры возвращают либо структуру {}, либо список структур [{}, {} ...]
@@ -117,6 +122,14 @@ sub str {
     $s = $s->{txt};
     $s =~ s/^\s+//;
     $s =~ s/\s+$//;
+    return $s;
+}
+
+# Удаляет обратную косую черту только перед экранируемой ASCII-пунктуацией.
+# Применяется к строковым полям, которые не разбираются через inline().
+sub unescape {
+    my $s = shift;
+    $s =~ s/\\($punctuation)/$1/g;
     return $s;
 }
 
@@ -674,6 +687,8 @@ sub inline {
     my ($s, $end) = @_;
     # Если указан шаблон $end, то поиск будет остановлен по достижению этого шаблона,
     # а валидный возврат будет только в случае, если было совпадение с данным шаблоном.
+    # Экранированная пунктуация обрабатывается раньше $end и остальных конструкций,
+    # поэтому сохраняет буквальное значение даже на границе вложенного элемента.
     #
     # Без указания шаблона $end этот метод предназначен только для применения к фрагменту,
     # т.к. захавает всё содержимое без остатка
@@ -721,7 +736,13 @@ sub inline {
         # а начало новой строки не должно быть списком
         return if $s->{txt} =~ /\n$textend/;
 
-        if ($end && match($s, my $s1, $end)) {
+        # от inline_XXX функций мы не будем ожидать pos в ответе,
+        # сформируем его сами после вызова
+        my @pos = $s->pos();
+
+        my $f = inline_escape($s);
+
+        if (!$f && $end && match($s, my $s1, $end)) {
             # сработал $end
             # если в нём применялся фрагмент, то его надо дописать к текстовой строке.
             $txt->{txt} .= $s1->{txt} if $s1;
@@ -729,11 +750,7 @@ sub inline {
             last;
         }
 
-        # от inline_XXX функций мы не будем ожидать pos в ответе,
-        # сформируем его сами после вызова
-        my @pos = $s->pos();
-
-        my $f =
+        $f ||=
             inline_strike   ($s) ||
             inline_underline($s) ||
             inline_mark     ($s) ||
@@ -783,6 +800,22 @@ sub inline {
 
 # Распознаватели inline-элементов изменяют исходный txt-объект только при полном
 # совпадении и возвращают элемент для общего массива содержимого inline().
+sub inline_escape {
+    my ($s) = @_;
+
+    my $nobrbeg = $s->{prev} && ($s->{prev} =~ /\S$/);
+    match($s, my $text, qr/\\($punctuation)/) || return;
+    my $nobrend = $s->{txt} =~ /^\S/;
+
+    $_[0] = $s;
+    return {
+        type    => 'escape',
+        text    => $text->{txt},
+        $nobrbeg ? (nobrbeg => 1) : (),
+        $nobrend ? (nobrend => 1) : (),
+    };
+}
+
 sub inline_strike {
     my ($s) = @_;
 
@@ -890,14 +923,18 @@ sub inline_code {
     };
 }
 
+# Разбирает изображение с форматируемым описанием; в URL и двойном заголовке
+# допустимая экранированная ASCII-пунктуация преобразуется в обычные символы.
 sub inline_image {
     my ($s) = @_;
 
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
     my $text = inline($s, qr/\]/) || return;
 
-    match($s, my $url, my $title, qr/\(\s*([^\(\)\"]+?)\s*(?:\s+\"(.*?)\")?\)/) || return;
+    match($s, my $url, my $title, qr/\(\s*((?:$escaped|[^\(\)\"])+?)\s*(?:\s+\"((?:$escaped|[^\"])*)\")?\)/) || return;
     $url = str($url) || return;
+    $url = unescape($url);
+    my $titlestr = $title ? unescape($title->{txt}) : undef;
 
     $_[0] = $s;
     return {
@@ -905,19 +942,22 @@ sub inline_image {
         url     => $url,
         @$text ?
             (text   => $text)           : (),
-        $title && length($title->{txt}) ?
-            (title  => $title->{txt})   : (),
+        defined($titlestr) && length($titlestr) ?
+            (title  => $titlestr)       : (),
     };
 }
 
+# Разбирает ссылку с форматируемым текстом; экранированная пунктуация в URL,
+# включая закрывающую скобку, не завершает адрес и выводится без косой черты.
 sub inline_href {
     my ($s) = @_;
 
     match($s, qr/\[(?:[ \t\r]*\n)?/) || return;
     my $text = inline($s, qr/\]/) || return;
 
-    match($s, my $url, qr/\(([^\(\)\"]+?)\)/) || return;
+    match($s, my $url, qr/\(((?:$escaped|[^\(\)\"])+?)\)/) || return;
     $url = str($url) || return;
+    $url = unescape($url);
 
     $_[0] = $s;
     return {
