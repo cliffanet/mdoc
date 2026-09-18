@@ -157,22 +157,49 @@ sub contadd {
     $c;
 }
 
+# Возвращает видимый текст inline-элементов без форматирования. Применяется
+# при формировании идентификатора заголовка.
+sub txt2str {
+    my $s = '';
+
+    foreach my $c (@_) {
+        if (ref($c) eq 'txt') {
+            $s .= $c->{txt};
+        }
+        elsif (ref($c) eq 'HASH') {
+            my $text = $c->{text};
+            if (ref($text) eq 'ARRAY') {
+                $s .= txt2str(@$text);
+            }
+            elsif (ref($text) eq 'txt') {
+                $s .= $text->{txt};
+            }
+            elsif (defined($text) && !ref($text)) {
+                $s .= $text;
+            }
+        }
+    }
+
+    return $s;
+}
+
 
 # ----------------------------------------------------------------------
 # ---
 # ---   doc
 # ---
 # Разбирает документ верхнего уровня. В отличие от level(), здесь разрешены
-# модификаторы документа и заголовки.
+# модификаторы документа и заголовки; каждому заголовку назначается уникальный id.
 sub doc {
     my ($s) = @_;
 
     my $content = [];
+    my $idall = {};
 
     while (!$s->empty()) {
         my $e =
-            modificator ($s) || # Специальные модификаторы и
-            header      ($s) || # заголовки могут быть только на верхнем уровне
+            modificator ($s)         || # Специальные модификаторы и
+            header      ($s, $idall) || # заголовки могут быть только на верхнем уровне
             paragraph   ($s);
         
         $e || return err($s->{pos}, 'doc > Can\t parse symbol');
@@ -198,17 +225,31 @@ sub modificator {
 }
 
 sub header {
-    my ($s) = @_;
+    my ($s, $idall) = @_;
 
     my $ln = line($s, 1, 1) || return;
     match($ln, my $p, my $t, qr/ {0,3}(\#+)\s+(.*)$/) || return;
     my $text = inline($t) || return;
+
+    # Формируем GitHub-совместимый уникальный идентификатор заголовка.
+    my $id = lc txt2str(@$text);
+    if ($id ne '') {
+        $id =~ s/^\s+|\s+$//g;
+        $id =~ s/ /-/g;
+        $id =~ s/[^\p{L}\p{M}\p{N}_\-]//g;
+
+        my $base = $id;
+        my $n = 0;
+        $id = $base . '-' . ++$n while exists $idall->{$id};
+        $idall->{$id} = 1;
+    }
 
     $_[0] = $s;
     return {
         type    => 'header',
         pos     => [$p->pos()],
         deep    => length($p->{txt}),
+        id      => $id,
         text    => $text
     };
 }

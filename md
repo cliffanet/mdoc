@@ -61,6 +61,9 @@ Options:
 
     -b, --base-uri      Base-prefix for relative links
 
+    --lnk-fmt           Replace .md in anchored links with output format
+    --no-lnk-fmt        Preserve .md in anchored links
+
     --page-number       Print page numbers in PDF
     --no-page-number    Disable page numbers
 
@@ -92,13 +95,14 @@ sub err {
 # включая вычисленный тип результата и рабочий каталог исходного файла.
 sub arg {
     my $r = {};
-    my ($h, $t, $root, $baseuri, $pagenumber, @file);
+    my ($h, $t, $root, $baseuri, $lnkfmt, $pagenumber, @file);
 
     GetOptions(
         'help'          => \$h,
         'type=s'        => \$t,
         'root-dir=s'    => \$root,
         'base-uri=s'    => \$baseuri,
+        'lnk-fmt!'      => \$lnkfmt,
         'page-number!'  => \$pagenumber,
         '<>'            => sub { push @file, shift(); },
     ) || return usage('');
@@ -137,6 +141,8 @@ sub arg {
 
     $r->{'base-uri'} = $baseuri if $baseuri;
 
+    $r->{'lnk-fmt'} = $lnkfmt if defined $lnkfmt;
+
     $r->{'page-number'} = $pagenumber if defined $pagenumber;
 
     return $r;
@@ -149,7 +155,7 @@ sub arg {
 # ---
 
 # Разбирает необязательный YAML-блок в начале документа. Поддерживаются
-# вложенные словари, строки, целые числа и false; geometry дополнительно
+# вложенные словари, строки, целые числа и boolean; geometry дополнительно
 # преобразуется в словарь значений. При успехе исходный txt-объект заменяется
 # остатком документа, а функция возвращает хеш параметров.
 sub yaml {
@@ -207,7 +213,10 @@ sub yaml {
         elsif ($val->match(qr/\-?\d+\s*$/)) {
             $val->{txt} = int $val->{txt};
         }
-        elsif ($val->match(qr/false\s*$/)) {
+        elsif ($val->match(qr/true\s*$/i)) {
+            $val->{txt} = 1;
+        }
+        elsif ($val->match(qr/false\s*$/i)) {
             $val->{txt} = 0;
         }
         $y->{ $p } = $val->{txt};

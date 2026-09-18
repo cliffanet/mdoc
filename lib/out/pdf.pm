@@ -190,7 +190,7 @@ sub modifier {
 sub header {
     my ($self, %p) = @_;
 
-    my $c = DHeader->new($p{deep}, @{ $p{ text } });
+    my $c = DHeader->new($p{deep}, $p{id}, @{ $p{ text } });
     $self->{ctx}->add( $c );
 }
 
@@ -1483,7 +1483,7 @@ package DHref;
 use base 'DNodeH', 'DParserH';
 
 # Ссылка с форматируемым inline-содержимым. После содержимого рисует
-# подчёркивание и добавляет PDF-аннотацию, дополняя URL настройкой base-uri.
+# подчёркивание и добавляет внутреннюю, межфайловую или URI-аннотацию.
 sub new {
     my $self = shift()->SUPER::new(
         url => shift()
@@ -1498,6 +1498,44 @@ sub stage2size {
     $self->{wspc} = $p->{style}->width(' ');
 
     $self->SUPER::stage2size($p, @p);
+}
+
+# Преобразует строку UTF-8 из байтового представления в символьное, если это
+# возможно. Уже декодированную строку возвращает без изменений.
+sub _toutf8 {
+    my $s = shift;
+
+    return $s if utf8::is_utf8($s);
+
+    my $text = eval {
+        Encode::decode('UTF-8', $s, Encode::FB_CROAK() | Encode::LEAVE_SRC())
+    };
+    return defined($text) ? $text : $s;
+}
+
+# Декодирует percent-последовательности фрагмента как UTF-8. Знак + остаётся
+# обычным символом, поскольку внутри URI fragment он не обозначает пробел.
+sub _fragdecode {
+    my $s = shift;
+
+    Encode::_utf8_off($s);
+    $s =~ s/\%([\da-fA-F]{2})/chr(hex($1))/eg;
+
+    return _toutf8($s);
+}
+
+# Создаёт PDF-действие перехода к именованному назначению в другом файле.
+sub remotelink {
+    my ($an, $file, $id) = @_;
+
+    ## Публичный метод PDF::API2::Annotation::pdf принимает только номер
+    ## страницы. Для перехода к именованному назначению GoToR приходится
+    ## сформировать стандартный словарь действия через объекты PDF::API2.
+    $an->{'Subtype'} = PDF::API2::Basic::PDF::Utils::PDFName('Link');
+    $an->{'A'} = PDF::API2::Basic::PDF::Utils::PDFDict();
+    $an->{'A'}->{'S'} = PDF::API2::Basic::PDF::Utils::PDFName('GoToR');
+    $an->{'A'}->{'F'} = PDF::API2::Basic::PDF::Utils::PDFStr(_toutf8($file));
+    $an->{'A'}->{'D'} = PDF::API2::Basic::PDF::Utils::PDFStr($id);
 }
 
 sub stage4draw {
@@ -1516,17 +1554,36 @@ sub stage4draw {
     my $an = $page->annotation();
     $an->rect($x, $y, $x + $w, $y + $h);
 
-    my $url = $self->{url};
+    my $url = out::_urlbyfmt($self->{url}, 'pdf', $opt);
     my $base = $opt->{'base-uri'} // $opt->{'baseuri'};
-    Encode::_utf8_off($url);
 
-    if (($url !~ /^https?\:\/\//i) && $base) {
+    if (
+            ($url !~ /^(?:[a-z][a-z0-9+\.\-]*\:|\/\/|\#)/i) &&
+            $base
+        ) {
         # надо согласовать utf8-флаг, т.к. переменные могут браться из файла и из командной строки,
         # из-за чего могут не совпадать и при соединении будет неконтролируемая конвертация
+        Encode::_utf8_off($url);
         Encode::_utf8_off($base);
         $url = $base . $url;
     }
-    $an->uri($url);
+
+    if ($url =~ /^\#(.*)$/s) {
+        # ссылка на внутренний якорь
+        $an->link(_fragdecode($1));
+    }
+    elsif (
+            ($url !~ /^(?:[a-z][a-z0-9+\.\-]*\:|\/\/|\/)/i) &&
+            ($url =~ /^(.*\.pdf(?:\?[^\#]*)?)\#(.+)$/is)
+        ) {
+        # ссылка на якорь в другом документе
+        remotelink($an, $1, _fragdecode($2));
+    }
+    else {
+        # Ссылка на любой другой внешний ресурс (через браузер)
+        Encode::_utf8_off($url);
+        $an->uri($url);
+    }
 }
 
 
@@ -1599,13 +1656,15 @@ package DHeader;
 use base 'DContent';
 
 # Заголовок документа. Глубина определяет размер шрифта и наличие нижней линии;
-# сам блок запрещает разрыв с идущим следом содержимым.
+# сам блок запрещает разрыв с идущим следом содержимым и регистрирует PDF-якорь.
 sub new {
     my $class = shift;
     my $deep = shift;
+    my $id = shift();
 
     my $self = $class->SUPER::new(@_);
     $self->{deep} = $deep;
+    $self->{id} = $id if $id;
     $self->{nobrend} = 1;
 
     return $self;
@@ -1637,7 +1696,12 @@ sub stage3layout {
 }
 
 sub stage4draw {
-    my ($self, $x, $y, $page, @p) = @_;
+    my ($self, $x, $y, $page, $pdf, @p) = @_;
+
+    if (my $id = $self->{id}) {
+        my $dst = $pdf->named_destination('Dests', $id);
+        $dst->destination($page, 'xyz', undef, $y + $self->h(), undef);
+    }
 
     if ($self->{hln}) {
         my $g = $page->graphics();
@@ -1648,7 +1712,7 @@ sub stage4draw {
         $g->stroke_color('#000');
     }
     
-    $self->SUPER::stage4draw($x, $y + $self->{hln}, $page, @p);
+    $self->SUPER::stage4draw($x, $y + $self->{hln}, $page, $pdf, @p);
 }
 
 
@@ -1660,7 +1724,7 @@ use base 'DHeader';
 # Горизонтальная линия, при наличии текста использующая оформление заголовка
 # второго уровня, а без текста — самостоятельный графический разделитель.
 sub new {
-    my $self = shift()->SUPER::new(2, @_);
+    my $self = shift()->SUPER::new(2, undef, @_);
 
     if ($self->empty()) {
         delete $self->{nobrend};

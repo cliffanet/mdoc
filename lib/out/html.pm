@@ -104,9 +104,11 @@ sub modifier {
 
 sub header {
     my ($self, %p) = @_;
+
+    my $id = html_escape($p{id});
     
     $self->{ctx}->add(
-        '<h'.int($p{deep}).'>',
+        '<h'.int($p{deep}).' id="'.$id.'">',
         $self->subnode( @{ $p{ text } } ),
         '</h'.int($p{deep}).'>',
     );
@@ -368,13 +370,19 @@ sub image {
     );
 }
 
-# Выводит ссылку, сначала дополняя относительный URL настройкой base-uri,
-# а затем кодируя готовое значение для HTML-атрибута.
+# Выводит ссылку: при необходимости меняет расширение Markdown-документа,
+# дополняет внешний относительный URL настройкой base-uri и кодирует атрибут.
+# Внутридокументный fragment настройкой base-uri не дополняется.
 sub href {
     my ($self, %p) = @_;
 
-    my $url = $p{url};
-    if (($url !~ /^[a-z]{2,5}\:\/\//i) && (my $base = $self->{opt}->{'html-base-uri'})) {
+    # При необходимости (опции) сменим формат документу
+    my $url = $self->urlbyfmt($p{url}, 'html');
+    # Если путь получился относительный, добавим ему html-base-uri
+    if (
+            ($url !~ /^(?:[a-z][a-z0-9+\.\-]*\:|\/\/|\#)/i) &&
+            (my $base = $self->{opt}->{'html-base-uri'})
+        ) {
         $url = $base . $url;
     }
     $url = html_escape($url);
