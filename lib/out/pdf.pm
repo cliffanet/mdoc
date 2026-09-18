@@ -86,6 +86,10 @@ sub data {
     # и размеры всех полей.
     $self->{doc}->stage3layout('A4', %{ $self->{margin} });
 
+    # После пагинации известны физические страницы заголовков. Назначаем
+    # номера страниц и передаём их строкам оглавления до начала отрисовки.
+    $self->{doc}->calcpages();
+
     # И, наконец, выводим содержимое
     $self->{doc}->stage4draw( $self->{pdf}, $self->{opt} );
     
@@ -184,6 +188,10 @@ sub modifier {
         return if (ref($self->{ctx}) ne 'DPage') || $self->{ctx}->empty();
         $self->{ctx} = DPage->new();
         $self->{doc}->add($self->{ctx});
+    }
+    elsif ($p{name} eq 'toc') {
+        my $toc = DToC->new( $self->tocdata($p{content}) );
+        $self->{ctx}->add($toc) if !$toc->empty();
     }
 }
 
@@ -642,6 +650,19 @@ sub add {
 
 sub empty   { return  @{ shift()->{chld} } == 0; }
 
+# Обходит дерево вниз, пропуская служебные hash-элементы текста.
+sub dncall {
+    my $self = shift;
+    my $call = shift;
+
+    $call->($self);
+    foreach my $c (@{ $self->{chld} || [] }) {
+        next if ref($c) eq 'HASH';
+        $c->dncall($call);
+    }
+}
+
+
 # Получение размеров элемента.
 #
 # До этого использовались статические размеры w/h в полях объекта,
@@ -1032,11 +1053,14 @@ sub stage3layout {
     $self->layout(h => $geom{h});
 }
 
-sub stage4draw {
-    my $self = shift();
+# Назначает физическим страницам номера, сопоставляет заголовки со страницами
+# и передаёт полученные номера всем экземплярам оглавления.
+sub calcpages {
+    my $self = shift;
 
     my $pns = $self->{style_pnum};
     my $pnfont = $pns ? [ $pns->font() ] : undef;
+    my %hdr = ();
 
     my $n = 0;
     my $total = @{ $self->{chld} };
@@ -1048,9 +1072,24 @@ sub stage4draw {
             $c->{pnfont}= $pnfont;
             $c->{pnw}   = $pns->width($n);
         }
+        $c->dncall(sub {
+            my $node = shift;
+            return if !$node->isa('DHeader') || !defined($node->{id});
+            $hdr{ $node->{id} } ||= $n;
+        });
     }
 
-    return $self->DNode::stage4draw(@_)
+    $self->dncall(sub {
+        my $node = shift;
+        return if ref($node) ne 'DToCItem';
+        $node->setpnum($hdr{ $node->{id} });
+    });
+
+    return $self;
+}
+
+sub stage4draw {
+    return shift()->DNode::stage4draw(@_);
 }
 
 
@@ -1652,6 +1691,123 @@ sub stage4draw {
 # ============================================================
 # ============================================================
 
+package DToC;
+use base 'DNodeV';
+
+# Добавляет дерево оглавления в PDF-блок, сохраняя глубину вложенности.
+sub _tocadd {
+    my $self = shift;
+    my $level = shift;
+
+    foreach my $e (@_) {
+        $self->add( DToCItem->new($e->{id}, $level, $e->{title}) );
+        $self->_tocadd($level + 1, @{ $e->{content} });
+    }
+}
+
+sub new {
+    my $class = shift;
+    my $self = $class->SUPER::new();
+
+    $self->_tocadd(0, @_);
+
+    return $self;
+}
+
+# Оглавление как вертикальный набор неделимых строк.
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{hspc} = $p->{style}->height() * 0.35;
+    $self->SUPER::stage2size($p, @p);
+}
+
+
+# ============================================================
+# ============================================================
+package DToCItem;
+use base 'DContent';
+
+# Строка оглавления хранит внутреннюю ссылку, уровень дерева и целевой id.
+sub new {
+    my ($class, $id, $level, $title) = @_;
+
+    my $self = $class->SUPER::new({
+        type    => 'href',
+        url     => '#' . ($id // ''),
+        text    => [txt->new($title // '')]
+    });
+    $self->{id} = $id;
+    $self->{level} = $level;
+    return $self;
+}
+
+# Строка оглавления не разделяется между страницами.
+sub hsplit {}
+
+sub h {
+    my $self = shift;
+    my $h = $self->SUPER::h(@_);
+    return $h > ($self->{lineh} || 0) ? $h : ($self->{lineh} || 0);
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{style} = $p->{style}->clone();
+    $self->{lineh} = $self->{style}->height();
+    $self->{indent} = $self->{lineh} * 1.5 * $self->{level};
+    $self->{ulpos} = $self->{style}->ulpos();
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub stage3layout {
+    my ($self, $w, $h, @p) = @_;
+
+    $self->{ctxw} = $w;
+    $self->{pcol} = $w * 0.1;
+    my $textw = $w - $self->{indent} - $self->{pcol};
+    $textw = $self->{lineh} if $textw < $self->{lineh};
+    $self->SUPER::stage3layout($textw, $h, @p);
+}
+
+# Сохраняет физический номер страницы целевого заголовка после пагинации.
+sub setpnum {
+    my ($self, $n) = @_;
+
+    if (defined($n)) {
+        $self->{pnum} = $n;
+    }
+    else {
+        delete $self->{pnum};
+    }
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $page, @p) = @_;
+
+    $self->SUPER::stage4draw($x + $self->{indent}, $y, $page, @p);
+    return if !defined($self->{pnum});
+
+    my $d = PageDraw->new($page);
+    my $style = $self->{style};
+    my $num = $self->{pnum};
+    my $nw = $style->width($num);
+    my $gap = $style->width(' ');
+    my $dotw = $style->width('.');
+    my $last = $self->{chld}->[@{ $self->{chld} } - 1];
+    my $beg = $x + $self->{indent} + $last->w() + $gap;
+    my $end = $x + $self->{ctxw} - $nw - $gap;
+
+    $d->font($style->font());
+    if (($dotw > 0) && ($end > $beg)) {
+        my $cnt = int(($end - $beg) / $dotw);
+        $d->text($beg, $y - $self->{ulpos}, '.' x $cnt) if $cnt > 0;
+    }
+    $d->text($x + $self->{ctxw} - $nw, $y - $self->{ulpos}, $num);
+}
+
+
 package DHeader;
 use base 'DContent';
 
@@ -1664,7 +1820,7 @@ sub new {
 
     my $self = $class->SUPER::new(@_);
     $self->{deep} = $deep;
-    $self->{id} = $id if $id;
+    $self->{id} = $id if defined($id);
     $self->{nobrend} = 1;
 
     return $self;
@@ -1698,7 +1854,8 @@ sub stage3layout {
 sub stage4draw {
     my ($self, $x, $y, $page, $pdf, @p) = @_;
 
-    if (my $id = $self->{id}) {
+    my $id = $self->{id};
+    if (defined($id)) {
         my $dst = $pdf->named_destination('Dests', $id);
         $dst->destination($page, 'xyz', undef, $y + $self->h(), undef);
     }

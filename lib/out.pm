@@ -39,6 +39,45 @@ sub urlbyfmt {
     return _urlbyfmt($url, $fmt, $self->{opt});
 }
 
+# Фильтрует элементы оглавления настройками рендерера и строит дерево.
+# Родителем становится ближайший предыдущий заголовок меньшей глубины.
+sub tocdata {
+    my ($self, $content) = @_;
+
+    my $hmax = 6;
+    if (defined(my $v = $self->{opt}->{'toc-hmax'})) {
+        if ($v =~ /^[\+\-]?\d+$/) {
+            $hmax = int($v);
+            $hmax = 1 if $hmax < 1;
+            $hmax = 6 if $hmax > 6;
+        }
+    }
+
+    # вложенное дерево content состоит только из элементов toc,
+    # content содержит заголовки более глубокого уровня, чем текущий
+    my @toc = ();
+    my @stack;
+    foreach my $h (@{ $content || [] }) {
+        next if $self->{opt}->{'toc-noh1'} && ($h->{deep} == 1);
+        next if $h->{deep} > $hmax;
+
+        my $node = {
+            %$h,
+            content => []
+        };
+        pop @stack while @stack && ($stack[@stack-1]->{deep} >= $h->{deep});
+        if (@stack) {
+            push @{ $stack[@stack-1]->{content} }, $node;
+        }
+        else {
+            push @toc, $node;
+        }
+        push @stack, $node;
+    }
+
+    return @toc;
+}
+
 # Последовательно передаёт текстовые и структурные элементы соответствующим
 # обработчикам рендерера. Неизвестные типы элементов пропускаются.
 sub make {

@@ -110,6 +110,19 @@ blockquote {
 	border-left-style: solid;
 }
 
+ul.toc,
+ul.toc ul {
+    list-style: none;
+}
+
+ul.toc {
+    padding-left: 0;
+}
+
+ul.toc ul {
+    padding-left: 1.5em;
+}
+
 table {
 	border-collapse: collapse;
 }

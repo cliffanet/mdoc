@@ -64,6 +64,10 @@ Options:
     --lnk-fmt           Replace .md in anchored links with output format
     --no-lnk-fmt        Preserve .md in anchored links
 
+    --toc-noh1          Exclude H1 headings from table of contents
+    --no-toc-noh1       Include H1 headings in table of contents
+    --toc-hmax=N        Maximum heading level in table of contents (1-6)
+
     --page-number       Print page numbers in PDF
     --no-page-number    Disable page numbers
 
@@ -95,7 +99,7 @@ sub err {
 # включая вычисленный тип результата и рабочий каталог исходного файла.
 sub arg {
     my $r = {};
-    my ($h, $t, $root, $baseuri, $lnkfmt, $pagenumber, @file);
+    my ($h, $t, $root, $baseuri, $lnkfmt, $tocnoh1, $tochmax, $pagenumber, @file);
 
     GetOptions(
         'help'          => \$h,
@@ -103,6 +107,8 @@ sub arg {
         'root-dir=s'    => \$root,
         'base-uri=s'    => \$baseuri,
         'lnk-fmt!'      => \$lnkfmt,
+        'toc-noh1!'     => \$tocnoh1,
+        'toc-hmax=s'    => \$tochmax,
         'page-number!'  => \$pagenumber,
         '<>'            => sub { push @file, shift(); },
     ) || return usage('');
@@ -142,6 +148,9 @@ sub arg {
     $r->{'base-uri'} = $baseuri if $baseuri;
 
     $r->{'lnk-fmt'} = $lnkfmt if defined $lnkfmt;
+
+    $r->{'toc-noh1'} = $tocnoh1 if defined $tocnoh1;
+    $r->{'toc-hmax'} = $tochmax if defined $tochmax;
 
     $r->{'page-number'} = $pagenumber if defined $pagenumber;
 

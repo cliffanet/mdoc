@@ -194,16 +194,24 @@ sub doc {
     my ($s) = @_;
 
     my $content = [];
-    my $idall = {};
+    my %idall = ();
+    my @hall = ();
 
     while (!$s->empty()) {
         my $e =
-            modificator ($s)         || # Специальные модификаторы и
-            header      ($s, $idall) || # заголовки могут быть только на верхнем уровне
+            modificator ($s)                 || # Специальные модификаторы и
+            header      ($s, \%idall, \@hall)|| # заголовки могут быть только на верхнем уровне
             paragraph   ($s);
         
         $e || return err($s->{pos}, 'doc > Can\t parse symbol');
         contadd($content, $e);
+    }
+
+    # Оглавлению нужен полный список заголовков независимо от положения
+    # модификатора в документе. Элементы списка не изменяются рендерерами.
+    foreach my $e (@$content) {
+        next if ($e->{type} ne 'modifier') || ($e->{name} ne 'toc');
+        $e->{content} = [ @hall ];
     }
 
     $_[0] = $s;
@@ -214,7 +222,7 @@ sub modificator {
     my ($s) = @_;
 
     my $ln = line($s, 1, 1) || return;
-    match($ln, my $beg, my $m, qr/ {0,3}(\\(pagebreak))\s*$/) || return;
+    match($ln, my $beg, my $m, qr/ {0,3}(\\(pagebreak|toc))\s*$/) || return;
 
     $_[0] = $s;
     return {
@@ -225,23 +233,32 @@ sub modificator {
 }
 
 sub header {
-    my ($s, $idall) = @_;
+    my ($s, $idall, $hall) = @_;
 
     my $ln = line($s, 1, 1) || return;
-    match($ln, my $p, my $t, qr/ {0,3}(\#+)\s+(.*)$/) || return;
-    my $text = inline($t) || return;
+    match($ln, my $p, my $t, qr/ {0,3}(\#+)(?:[ \t]+(.*))?$/) || return;
+    my $text = (!$t || ($t->{txt} eq '')) ? [] : inline($t) || return;
 
     # Формируем GitHub-совместимый уникальный идентификатор заголовка.
     my $id = lc txt2str(@$text);
-    if ($id ne '') {
-        $id =~ s/^\s+|\s+$//g;
-        $id =~ s/ /-/g;
-        $id =~ s/[^\p{L}\p{M}\p{N}_\-]//g;
+    $id =~ s/^\s+|\s+$//g;
+    $id =~ s/ /-/g;
+    $id =~ s/[^\p{L}\p{M}\p{N}_\-]//g;
 
+    if ($idall) {
         my $base = $id;
         my $n = 0;
         $id = $base . '-' . ++$n while exists $idall->{$id};
         $idall->{$id} = 1;
+    }
+
+    # список всех заголовков для toc
+    if ($hall) {
+        push @$hall, {
+            deep    => length($p->{txt}),
+            id      => $id,
+            title   => txt2str(@$text)
+        };
     }
 
     $_[0] = $s;

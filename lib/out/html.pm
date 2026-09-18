@@ -93,12 +93,31 @@ sub subnode {
     return $node;
 }
 
+# Преобразует дерево оглавления во вложенные ненумерованные списки.
+sub _tochtml {
+    my ($toc, $root) = @_;
+
+    my $s = $root ? '<ul class="toc">' : '<ul>';
+    foreach my $e (@$toc) {
+        my $id = html_escape($e->{id});
+        my $title = html_escape($e->{title});
+        $s .= '<li><a href="#'.$id.'">'.$title.'</a>';
+        $s .= _tochtml($e->{content}) if @{ $e->{content} };
+        $s .= '</li>';
+    }
+    return $s . '</ul>';
+}
+
 # Блочные обработчики получают поля элемента парсера и добавляют HTML-фрагменты
 # в текущий ctx. Вложенное содержимое строится в отдельных узлах через subnode().
 sub modifier {
     my ($self, %p) = @_;
 
     if ($p{name} eq 'pagebreak') {
+    }
+    elsif ($p{name} eq 'toc') {
+        my $toc = [ $self->tocdata($p{content}) ];
+        $self->{ctx}->add(_tochtml($toc, 1)) if @$toc;
     }
 }
 
