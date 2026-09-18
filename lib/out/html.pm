@@ -381,8 +381,8 @@ sub image {
     my ($self, %p) = @_;
 
     my $url = html_escape($p{url});
-    my $title = $p{title} ? html_escape($p{title}) : '';
-    my $attr = $title ? ' alt="'.$title.'" title="'.$title.'"' : '';
+    my $title = html_escape($p{title});
+    my $attr = exists($p{title}) ? ' alt="'.$title.'" title="'.$title.'"' : '';
     
     $self->{ctx}->add(
         '<img src="'.$url.'"'.$attr.'>',
@@ -405,9 +405,11 @@ sub href {
         $url = $base . $url;
     }
     $url = html_escape($url);
+    my $title = html_escape($p{title});
+    my $attr = exists($p{title}) ? ' title="'.$title.'"' : '';
     
     $self->{ctx}->add(
-        '<a href="'.$url.'">',
+        '<a href="'.$url.'"'.$attr.'>',
         $self->subnode( @{ $p{ text } } ),
         '</a>',
     );

@@ -133,6 +133,44 @@ sub unescape {
     return $s;
 }
 
+# Разбирает URL и необязательный Markdown-title внутри круглых скобок.
+# Title поддерживает двойные, одинарные и круглые ограничители.
+sub inline_target {
+    my ($s) = @_;
+
+    my ($url, $title);
+    if (
+            match(
+                $s,
+                $url, my $title1, my $title2, my $title3,
+                qr/\(\s*((?:$escaped|[^\(\)\"])+?)\s+(?:\"((?:$escaped|[^\"])*)\"|\'((?:$escaped|[^\'])*)\'|\(((?:$escaped|[^\(\)])*)\))\s*\)/
+            )
+        ) {
+        $title = $title1 || $title2 || $title3;
+    }
+    elsif (
+            !match(
+                $s,
+                $url,
+                qr/\(\s*((?:$escaped|[^\(\)\"\']|(?<!\s)\')+?)\s*\)/
+            )
+        ) {
+        return;
+    }
+
+    my $urlstr = str($url) || return;
+    $urlstr = unescape($urlstr);
+
+    my $r = { url => $urlstr };
+    if ($title) {
+        return if $title->match(qr/\n\s*\n/);
+        $r->{title} = unescape($title->{txt});
+    }
+
+    $_[0] = $s;
+    return $r;
+}
+
 # Добавляет элемент в content. Последовательные элементы listitem одного типа
 # объединяются в общий list, остальные элементы добавляются без преобразования.
 sub contadd {
@@ -506,10 +544,16 @@ sub badge {
 
     # title
     my $title;
-    if (match($s, my $title1, my $title2, qr/\s+(?:\"([^\"]*)\"|\'([^\']*)\')/)) {
-        $title = $title1 || $title2;
+    if (
+            match(
+                $s,
+                my $title1, my $title2, my $title3,
+                qr/\s+(?:\"((?:$escaped|[^\"])*)\"|\'((?:$escaped|[^\'])*)\'|\(((?:$escaped|[^\(\)])*)\))/
+            )
+        ) {
+        $title = $title1 || $title2 || $title3;
         return if $title->match(qr/\n\s*\n/);
-        undef($title) if $title->empty();
+        $title->{txt} = unescape($title->{txt});
     }
 
     # завершаем строку, она должна быть пустой
@@ -981,47 +1025,42 @@ sub inline_code {
     };
 }
 
-# Разбирает изображение с форматируемым описанием; в URL и двойном заголовке
-# допустимая экранированная ASCII-пунктуация преобразуется в обычные символы.
+# Разбирает изображение с форматируемым описанием, URL и необязательным title.
 sub inline_image {
     my ($s) = @_;
 
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
     my $text = inline($s, qr/\]/) || return;
 
-    match($s, my $url, my $title, qr/\(\s*((?:$escaped|[^\(\)\"])+?)\s*(?:\s+\"((?:$escaped|[^\"])*)\")?\)/) || return;
-    $url = str($url) || return;
-    $url = unescape($url);
-    my $titlestr = $title ? unescape($title->{txt}) : undef;
+    my $target = inline_target($s) || return;
 
     $_[0] = $s;
     return {
         type    => 'image',
-        url     => $url,
+        url     => $target->{url},
         @$text ?
             (text   => $text)           : (),
-        defined($titlestr) && length($titlestr) ?
-            (title  => $titlestr)       : (),
+        exists($target->{title}) ?
+            (title  => $target->{title}): (),
     };
 }
 
-# Разбирает ссылку с форматируемым текстом; экранированная пунктуация в URL,
-# включая закрывающую скобку, не завершает адрес и выводится без косой черты.
+# Разбирает ссылку с форматируемым текстом, URL и необязательным title.
 sub inline_href {
     my ($s) = @_;
 
     match($s, qr/\[(?:[ \t\r]*\n)?/) || return;
     my $text = inline($s, qr/\]/) || return;
 
-    match($s, my $url, qr/\(((?:$escaped|[^\(\)\"])+?)\)/) || return;
-    $url = str($url) || return;
-    $url = unescape($url);
+    my $target = inline_target($s) || return;
 
     $_[0] = $s;
     return {
         type    => 'href',
-        url     => $url,
-        text    => $text
+        url     => $target->{url},
+        text    => $text,
+        exists($target->{title}) ?
+            (title  => $target->{title}) : (),
     };
 }
 

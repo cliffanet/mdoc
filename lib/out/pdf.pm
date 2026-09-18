@@ -1013,7 +1013,7 @@ sub content {
             $self->toline( DICode->new($c->{text}) );
         }
         elsif ($c->{type} eq 'href') {
-            $self->toline( DHref->new($c->{url}, @{ $c->{text} }) );
+            $self->toline( DHref->new($c->{url}, $c->{title}, @{ $c->{text} }) );
         }
         elsif ($c->{type} eq 'image') {
             $self->toline( DImage->new($c->{url}, $c->{title}, $c->{alt}) );
@@ -1524,9 +1524,13 @@ use base 'DNodeH', 'DParserH';
 # Ссылка с форматируемым inline-содержимым. После содержимого рисует
 # подчёркивание и добавляет внутреннюю, межфайловую или URI-аннотацию.
 sub new {
-    my $self = shift()->SUPER::new(
-        url => shift()
+    my $class = shift;
+    my $url = shift;
+    my $title = shift;
+    my $self = $class->SUPER::new(
+        url => $url
     );
+    $self->{title} = $title if defined($title);
     $self->content(@_);
     return $self;
 }
@@ -1622,6 +1626,10 @@ sub stage4draw {
         # Ссылка на любой другой внешний ресурс (через браузер)
         Encode::_utf8_off($url);
         $an->uri($url);
+    }
+
+    if (defined(my $title = $self->{title})) {
+        $an->{'Contents'} = PDF::API2::Basic::PDF::Utils::PDFStr(_toutf8($title));
     }
 }
 
