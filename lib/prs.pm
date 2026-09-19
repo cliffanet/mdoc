@@ -141,7 +141,7 @@ sub unescape {
 # Разбирает URL и необязательный Markdown-title внутри круглых скобок.
 # Title поддерживает двойные, одинарные и круглые ограничители.
 sub inline_target {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my ($url, $title);
     if (
@@ -259,7 +259,8 @@ sub _badgeurl {
 # восстанавливается исходным txt-фрагментом и выводится буквально. Проход выполняется
 # после полного разбора, так как ссылочное определение может находиться после его использования.
 sub _badgeresolve {
-    my ($v, $ball) = @_;
+    my ($v, $glb) = @_;
+    my $ball = $glb->{ball} || {};
 
     if (ref($v) eq 'ARRAY') {
         foreach my $n (0 .. $#$v) {
@@ -282,12 +283,12 @@ sub _badgeresolve {
                 };
                 next;
             }
-            _badgeresolve($e, $ball);
+            _badgeresolve($e, $glb);
         }
     }
     elsif (ref($v) eq 'HASH') {
         foreach my $e (values %$v) {
-            _badgeresolve($e, $ball) if ref($e) eq 'ARRAY' || ref($e) eq 'HASH';
+            _badgeresolve($e, $glb) if ref($e) eq 'ARRAY' || ref($e) eq 'HASH';
         }
     }
 }
@@ -299,14 +300,14 @@ sub _badgeresolve {
 # ---
 # Разбирает документ верхнего уровня. В отличие от level(), здесь разрешены
 # модификаторы документа и заголовки; каждому заголовку назначается уникальный id.
-# Модификаторы выравнивания удаляются и переносятся в следующий текстовый абзац.
+# Общие данные документа хранятся в %glb, передаваемом во все ветви парсера;
+# вложенные списки и хеши создаются лениво в месте их первого использования. Модификаторы
+# выравнивания удаляются и переносятся в следующий текстовый абзац.
 sub doc {
     my ($s) = @_;
 
     my $content = [];
-    my %idall = ();
-    my @hall = ();
-    my %ball = ();
+    my %glb = ();
     my %align = ();
     my $alignpos;
 
@@ -317,13 +318,12 @@ sub doc {
         # Логику по обработке определённых элементов следует размещать
         # внутри формирователей этих элементов (modificator, header и т.д.).
         #
-        # Если требуется работа с какими-то глобальными элементами
-        # (например %idall для формирования уникальных ID заголовков),
-        # опускается их тут определить и передавать в нужные функции.
+        # Глобальные данные документа накапливаются внутри %glb самими
+        # распознающими функциями.
         my $e =
-            modificator ($s)                 || # Специальные модификаторы и
-            header      ($s, \%idall, \@hall)|| # заголовки могут быть только на верхнем уровне
-            paragraph   ($s, \%ball);
+            modificator ($s, \%glb) || # Специальные модификаторы и
+            header      ($s, \%glb) || # заголовки могут быть только на верхнем уровне
+            paragraph   ($s, \%glb);
         
         $e || return err($s->{pos}, 'doc > Can\t parse symbol');
 
@@ -376,13 +376,13 @@ sub doc {
 
     # Определения собраны во время основного прохода. После полного разбора
     # разрешаем ссылки, которые могут находиться раньше своих определений.
-    _badgeresolve($content, \%ball);
+    _badgeresolve($content, \%glb);
 
     # Оглавлению нужен полный список заголовков независимо от положения
     # модификатора в документе. Элементы списка не изменяются рендерерами.
     foreach my $e (@$content) {
         next if ($e->{type} ne 'modifier') || ($e->{name} ne 'toc');
-        $e->{content} = [ @hall ];
+        $e->{content} = [ @{ $glb{hall} || [] } ];
     }
 
     $_[0] = $s;
@@ -390,7 +390,7 @@ sub doc {
 }
 
 sub modificator {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $ln = line($s, 1, 1) || return;
     match($ln, my $beg, my $m, qr/ {0,3}(\\(pagebreak|toc|center|vcenter))\s*$/) || return;
@@ -404,11 +404,11 @@ sub modificator {
 }
 
 sub header {
-    my ($s, $idall, $hall) = @_;
+    my ($s, $glb) = @_;
 
     my $ln = line($s, 1, 1) || return;
     match($ln, my $p, my $t, qr/ {0,3}(\#+)(?:[ \t]+(.*))?$/) || return;
-    my $text = (!$t || ($t->{txt} eq '')) ? [] : inline($t) || return;
+    my $text = (!$t || ($t->{txt} eq '')) ? [] : inline($t, $glb) || return;
 
     # Формируем GitHub-совместимый уникальный идентификатор заголовка.
     my $id = lc txt2str(@$text);
@@ -416,21 +416,19 @@ sub header {
     $id =~ s/ /-/g;
     $id =~ s/[^\p{L}\p{M}\p{N}_\-]//g;
 
-    if ($idall) {
-        my $base = $id;
-        my $n = 0;
-        $id = $base . '-' . ++$n while exists $idall->{$id};
-        $idall->{$id} = 1;
-    }
+    my $idall = ($glb->{idall} ||= {});
+    my $base = $id;
+    my $n = 0;
+    $id = $base . '-' . ++$n while exists $idall->{$id};
+    $idall->{$id} = 1;
 
     # список всех заголовков для toc
-    if ($hall) {
-        push @$hall, {
-            deep    => length($p->{txt}),
-            id      => $id,
-            title   => txt2str(@$text)
-        };
-    }
+    my $hall = ($glb->{hall} ||= []);
+    push @$hall, {
+        deep    => length($p->{txt}),
+        id      => $id,
+        title   => txt2str(@$text)
+    };
 
     $_[0] = $s;
     return {
@@ -449,12 +447,12 @@ sub header {
 # ---
 # Разбирает вложенный уровень документа, состоящий только из абзацных элементов.
 sub level {
-    my ($s, $ball) = @_;
+    my ($s, $glb) = @_;
 
     my $content = [];
 
     while (!$s->empty()) {
-        my $e = paragraph($s, $ball);
+        my $e = paragraph($s, $glb);
         $e || return err($s->{pos}, 'level > Can\t parse symbol');
         contadd($content, $e);
     }
@@ -466,7 +464,7 @@ sub level {
 # Пропускает разделяющие пустые строки и запускает подходящий распознаватель
 # одного блочного элемента.
 sub paragraph {
-    my ($s, $ball) = @_;
+    my ($s, $glb) = @_;
 
     # Сразу пропустим все пустые строки, т.к. они в этом месте всегда игнорируются
     while (($s->{txt} ne '') && (my ($ln, $tail) = $s->line(1))) {
@@ -475,15 +473,15 @@ sub paragraph {
     }
 
     my $e =
-        list        ($s, $ball) ||
-        hline       ($s) ||
-        code        ($s) ||
-        quote       ($s, $ball) ||
-        textblock   ($s) ||
-        badge       ($s, $ball) ||
-        table1      ($s) ||
-        table2      ($s) ||
-        text        ($s);
+        list        ($s, $glb) ||
+        hline       ($s, $glb) ||
+        code        ($s, $glb) ||
+        quote       ($s, $glb) ||
+        textblock   ($s, $glb) ||
+        badge       ($s, $glb) ||
+        table1      ($s, $glb) ||
+        table2      ($s, $glb) ||
+        text        ($s, $glb);
     
     $e || return;
 
@@ -498,7 +496,7 @@ sub paragraph {
 #   - пустой
 #   - списка
 sub text {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     return if $s->empty();
 
@@ -509,7 +507,7 @@ sub text {
     $txt->{txt} =~ s/[\r\n]+$//;
 
     my $pos = [$txt->pos()];
-    my $cont = inline($txt) || return;
+    my $cont = inline($txt, $glb) || return;
 
     $_[0] = $s;
     return {
@@ -523,13 +521,13 @@ sub text {
 # с его вложенным блоком. Первым блоком может быть ссылочное определение.
 # Объединение соседних пунктов выполняет contadd().
 sub list {
-    my ($s, $ball) = @_;
+    my ($s, $glb) = @_;
 
     match($s, my $mode, qr/ {0,3}([\*\-]|\d+\.)[ \t]+/) || return;
-    my @content = badge($s, $ball) || text($s) || return;
+    my @content = badge($s, $glb) || text($s, $glb) || return;
 
     if (my $ind = indent($s, qr/(?: {4}| {0,3}\t)/, 1)) {
-        my $sub = level($ind, $ball) || return;
+        my $sub = level($ind, $glb) || return;
         push @content, @$sub;
     }
 
@@ -550,7 +548,7 @@ sub list {
 # Три варианта горизонтальной линии: отдельная строка из дефисов, заголовок
 # с подчёркиванием дефисами и отдельная строка из символов подчёркивания.
 sub hline1 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $ln = line($s, 1) || return;
     match($ln, my $beg, qr/ {0,3}(-{3,})/) || return;
@@ -564,9 +562,9 @@ sub hline1 {
 }
 
 sub hline2 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
-    my $text = text($s) || return;
+    my $text = text($s, $glb) || return;
 
     my $ln = line($s, 1) || return;
     match($ln, qr/ {0,3}-+/) || return;
@@ -581,7 +579,7 @@ sub hline2 {
 }
 
 sub hline3 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $ln = line($s, 1) || return;
     match($ln, my $beg, qr/ {0,3}(_{3,})/) || return;
@@ -595,15 +593,21 @@ sub hline3 {
 }
 
 sub hline {
-    return
-        hline1(@_) ||
-        hline2(@_) ||
-        hline3(@_);
+    my ($s, $glb) = @_;
+
+    my $e =
+        hline1($s, $glb) ||
+        hline2($s, $glb) ||
+        hline3($s, $glb);
+
+    $e || return;
+    $_[0] = $s;
+    return $e;
 }
 
 # Распознаёт fenced-блок между строками ```, сохраняя необязательное имя языка.
 sub code {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $lang = line($s, 1) || return;
     match($lang, my $beg, qr/ {0,3}(\`\`\`)/) || return;
@@ -635,11 +639,11 @@ sub code {
 
 # Вырезает строки с префиксом > и рекурсивно разбирает их как вложенный уровень.
 sub quote {
-    my ($s, $ball) = @_;
+    my ($s, $glb) = @_;
 
     my @pos = $s->pos();
     my $ind = indent($s, qr/ {0,3}\>/) || return;
-    my $cont = level($ind, $ball) || return;
+    my $cont = level($ind, $glb) || return;
 
     $_[0] = $s;
     return {
@@ -651,7 +655,7 @@ sub quote {
 
 # Распознаёт блок строк с отступом в четыре пробела или одну табуляцию.
 sub textblock {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my @pos = $s->pos();
     my $ind = indent($s, qr/ {0,3}\t| {4}/, 1) || return;
@@ -669,7 +673,7 @@ sub textblock {
 # URL может быть заключён в угловые скобки, а title может занимать несколько
 # строк, но не содержит пустого абзаца.
 sub badge {
-    my ($s, $ball) = @_;
+    my ($s, $glb) = @_;
 
     my @pos = $s->pos();
     match(
@@ -695,8 +699,9 @@ sub badge {
             (title   => unescape($title->{txt})) : (),
     };
 
+    my $ball = ($glb->{ball} ||= {});
     my $key = _badgenorm($e->{code});
-    $ball->{$key} = $e if $ball && !exists($ball->{$key});
+    $ball->{$key} = $e if !exists($ball->{$key});
 
     $_[0] = $s;
     return $e;
@@ -705,7 +710,7 @@ sub badge {
 # Разбирает одну строку pipe-таблицы и возвращает список inline-ячеек.
 # Крайние символы | необязательны, но в строке должен быть хотя бы один |.
 sub _table1_line {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $ln = line($s, 1) || return;
     return if $ln->empty();
@@ -723,7 +728,7 @@ sub _table1_line {
 
     my $row = [];
     while (!$ln->empty()) {
-        my $cont = inline($ln, qr/\|/) || return;
+        my $cont = inline($ln, $glb, qr/\|/) || return;
         push @$row, $cont;
     }
 
@@ -739,10 +744,10 @@ sub _table1_line {
 # Разбирает pipe-таблицу с обязательной строкой-разделителем, из которой
 # извлекаются ширина и выравнивание столбцов.
 sub table1 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my @pos = $s->pos();
-    my $hdr = _table1_line($s) || return;
+    my $hdr = _table1_line($s, $glb) || return;
 
     my $ln = line($s, 1) || return;
     my $p = str(match($ln, qr/ {,3}\|?(?:\s*\:?\-+\:?\s*\|)+(?:\s*\:?\-+\:?\s*\|?)?/)) || return;
@@ -763,7 +768,7 @@ sub table1 {
 
     my @row = ();
     while (!$s->empty()) {
-        my $row = _table1_line($s) || last;
+        my $row = _table1_line($s, $glb) || last;
         push @row, $row;
     }
     
@@ -828,7 +833,7 @@ sub _ccut {
 # Разбирает таблицу, где границы столбцов задаются группами дефисов. Ячейка может
 # занимать несколько строк; её содержимое после нарезки разбирается через inline().
 sub table2 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my @pos = $s->pos();
     my $ln = line($s, 1) || return;
@@ -898,7 +903,7 @@ sub table2 {
     # Осталась финишная операция - надо отформатировать содержимое
     foreach my $row (@row) {
         foreach my $txt (@$row) {
-            $txt = inline($txt) || return;
+            $txt = inline($txt, $glb) || return;
         }
     }
     
@@ -917,7 +922,7 @@ sub table2 {
 # ---   inline
 # ---
 sub inline {
-    my ($s, $end) = @_;
+    my ($s, $glb, $end) = @_;
     # Если указан шаблон $end, то поиск будет остановлен по достижению этого шаблона,
     # а валидный возврат будет только в случае, если было совпадение с данным шаблоном.
     # Экранированная пунктуация обрабатывается раньше $end и остальных конструкций,
@@ -973,7 +978,7 @@ sub inline {
         # сформируем его сами после вызова
         my @pos = $s->pos();
 
-        my $f = inline_escape($s);
+        my $f = inline_escape($s, $glb);
 
         if (!$f && $end && match($s, my $s1, $end)) {
             # сработал $end
@@ -984,17 +989,17 @@ sub inline {
         }
 
         $f ||=
-            inline_strike   ($s) ||
-            inline_underline($s) ||
-            inline_mark     ($s) ||
-            inline_bold1    ($s) ||
-            inline_bold2    ($s) ||
-            inline_italic1  ($s) ||
-            inline_italic2  ($s) ||
-            inline_code     ($s) ||
-            inline_image    ($s) ||
-            inline_href     ($s) ||
-            inline_badge    ($s);
+            inline_strike   ($s, $glb) ||
+            inline_underline($s, $glb) ||
+            inline_mark     ($s, $glb) ||
+            inline_bold1    ($s, $glb) ||
+            inline_bold2    ($s, $glb) ||
+            inline_italic1  ($s, $glb) ||
+            inline_italic2  ($s, $glb) ||
+            inline_code     ($s, $glb) ||
+            inline_image    ($s, $glb) ||
+            inline_href     ($s, $glb) ||
+            inline_badge    ($s, $glb);
         if ($f) {   # сработал один из шаблонов
             # $txt - это текст перед найденным элементом
             if ($txt->{txt} ne '') {
@@ -1034,7 +1039,7 @@ sub inline {
 # Распознаватели inline-элементов изменяют исходный txt-объект только при полном
 # совпадении и возвращают элемент для общего массива содержимого inline().
 sub inline_escape {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $nobrbeg = $s->{prev} && ($s->{prev} =~ /\S$/);
     match($s, my $text, qr/\\($punctuation)/) || return;
@@ -1050,10 +1055,10 @@ sub inline_escape {
 }
 
 sub inline_strike {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\~\~/) || return;
-    my $text = inline($s, qr/\~\~/) || return;
+    my $text = inline($s, $glb, qr/\~\~/) || return;
 
     $_[0] = $s;
     return {
@@ -1063,10 +1068,10 @@ sub inline_strike {
 }
 
 sub inline_underline {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\+\+/) || return;
-    my $text = inline($s, qr/\+\+/) || return;
+    my $text = inline($s, $glb, qr/\+\+/) || return;
 
     $_[0] = $s;
     return {
@@ -1076,10 +1081,10 @@ sub inline_underline {
 }
 
 sub inline_mark {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\=\=/) || return;
-    my $text = inline($s, qr/\=\=/) || return;
+    my $text = inline($s, $glb, qr/\=\=/) || return;
 
     $_[0] = $s;
     return {
@@ -1089,10 +1094,10 @@ sub inline_mark {
 }
 
 sub inline_bold1 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/__/) || return;
-    my $text = inline($s, qr/__/) || return;
+    my $text = inline($s, $glb, qr/__/) || return;
 
     $_[0] = $s;
     return {
@@ -1102,10 +1107,10 @@ sub inline_bold1 {
 }
 
 sub inline_bold2 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\*\*/) || return;
-    my $text = inline($s, qr/\*\*/) || return;
+    my $text = inline($s, $glb, qr/\*\*/) || return;
 
     $_[0] = $s;
     return {
@@ -1115,12 +1120,12 @@ sub inline_bold2 {
 }
 
 sub inline_italic1 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
     
     return if $s->{prev} && ($s->{prev} =~ /[a-zA-Z0-9а-яА-Я\_]$/);
     match($s, qr/_/) || return;
     return if $s->{txt} =~ /^\_/;
-    my $text = inline($s, qr/_\b/) || return;
+    my $text = inline($s, $glb, qr/_\b/) || return;
 
     $_[0] = $s;
     return {
@@ -1130,11 +1135,11 @@ sub inline_italic1 {
 }
 
 sub inline_italic2 {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\*/) || return;
     return if $s->{txt} =~ /^\*/;
-    my $text = inline($s, qr/\*/) || return;
+    my $text = inline($s, $glb, qr/\*/) || return;
 
     $_[0] = $s;
     return {
@@ -1144,7 +1149,7 @@ sub inline_italic2 {
 }
 
 sub inline_code {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     # вроде б как inlinecode не должен внутри себя парсить форматтеры
     match($s, my $text, qr/\`(.+?)\`/) || return;
@@ -1158,12 +1163,12 @@ sub inline_code {
 
 # Разбирает изображение с форматируемым описанием, URL и необязательным title.
 sub inline_image {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
-    my $text = inline($s, qr/\]/) || return;
+    my $text = inline($s, $glb, qr/\]/) || return;
 
-    my $target = inline_target($s) || return;
+    my $target = inline_target($s, $glb) || return;
 
     $_[0] = $s;
     return {
@@ -1178,12 +1183,12 @@ sub inline_image {
 
 # Разбирает ссылку с форматируемым текстом, URL и необязательным title.
 sub inline_href {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     match($s, qr/\[(?:[ \t\r]*\n)?/) || return;
-    my $text = inline($s, qr/\]/) || return;
+    my $text = inline($s, $glb, qr/\]/) || return;
 
-    my $target = inline_target($s) || return;
+    my $target = inline_target($s, $glb) || return;
 
     $_[0] = $s;
     return {
@@ -1197,13 +1202,13 @@ sub inline_href {
 
 # Разбирает полную, свёрнутую и короткую формы ссылочного изображения.
 sub inline_badge {
-    my ($s) = @_;
+    my ($s, $glb) = @_;
 
     my $src = $s->copy();
 
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
     my $desc = $s->{txt};
-    my $text = inline($s, qr/\]/) || return;
+    my $text = inline($s, $glb, qr/\]/) || return;
 
     my $used = length($desc) - length($s->{txt});
     my $code = substr($desc, 0, $used);
