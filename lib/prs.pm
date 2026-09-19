@@ -228,21 +228,78 @@ sub txt2str {
 # ---
 # Разбирает документ верхнего уровня. В отличие от level(), здесь разрешены
 # модификаторы документа и заголовки; каждому заголовку назначается уникальный id.
+# Модификаторы выравнивания удаляются и переносятся в следующий текстовый абзац.
 sub doc {
     my ($s) = @_;
 
     my $content = [];
     my %idall = ();
     my @hall = ();
+    my %align = ();
+    my $alignpos;
 
     while (!$s->empty()) {
+        # Предполагается, что тут только получение элементов.
+        #
+        # Не следует сюда добавлять логику, особенно поэлементную.
+        # Логику по обработке определённых элементов следует размещать
+        # внутри формирователей этих элементов (modificator, header и т.д.).
+        #
+        # Если требуется работа с какими-то глобальными элементами
+        # (например %idall для формирования уникальных ID заголовков),
+        # опускается их тут определить и передавать в нужные функции.
         my $e =
             modificator ($s)                 || # Специальные модификаторы и
             header      ($s, \%idall, \@hall)|| # заголовки могут быть только на верхнем уровне
             paragraph   ($s);
         
         $e || return err($s->{pos}, 'doc > Can\t parse symbol');
+
+        # С модификаторами \align и \valign особый случай, поэтому их
+        # логика размещена именно здесь, а не внутри modificator/paragraph.
+        # Эти модификаторы не должны попадать в список $content (хотя,
+        # не вижу никаких проблем, если оно там окажется).
+        # Эти модификаторы должны вызывать ошибку, если следом будет
+        # что-то, кроме text и этих же модификаторов. Чтобы нормально
+        # эту ситуацию обработать, лучше размещать логику тут, а не внутри
+        # парсящих функций.
+
+        if (
+                ($e->{type} eq 'modifier') &&
+                (($e->{name} eq 'center') || ($e->{name} eq 'vcenter'))
+            ) {
+            $alignpos ||= $e->{pos};
+            $align{ $e->{name} eq 'center' ? 'align' : 'valign' } = 'c';
+            next;
+        }
+
+        if (%align) {
+            if ($e->{type} ne 'text') {
+                my ($row, $col) = @{ $e->{pos} || $alignpos };
+                return err(
+                    sprintf(
+                        '[ln: %d, col: %d] doc > Alignment modifier requires text paragraph',
+                        $row, $col
+                    )
+                );
+            }
+            $e->{align} = $align{align} if $align{align};
+            $e->{valign} = $align{valign} if $align{valign};
+            %align = ();
+            undef($alignpos);
+        }
+
         contadd($content, $e);
+    }
+
+    if (%align) {
+        my ($row, $col) = @$alignpos;
+        return err(
+            sprintf(
+                '[ln: %d, col: %d] doc > Alignment modifier requires text paragraph',
+                $row, $col
+            )
+        );
     }
 
     # Оглавлению нужен полный список заголовков независимо от положения
@@ -260,7 +317,7 @@ sub modificator {
     my ($s) = @_;
 
     my $ln = line($s, 1, 1) || return;
-    match($ln, my $beg, my $m, qr/ {0,3}(\\(pagebreak|toc))\s*$/) || return;
+    match($ln, my $beg, my $m, qr/ {0,3}(\\(pagebreak|toc|center|vcenter))\s*$/) || return;
 
     $_[0] = $s;
     return {

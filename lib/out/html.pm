@@ -218,9 +218,11 @@ sub listitem {
 
 sub text {
     my ($self, %p) = @_;
+
+    my $class = ($p{align} || '') eq 'c' ? ' class="center"' : '';
     
     $self->{ctx}->add(
-        '<p>',
+        '<p'.$class.'>',
         $self->subnode( @{ $p{ text } } ),
         '</p>',
     );

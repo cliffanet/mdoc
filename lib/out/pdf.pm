@@ -252,7 +252,9 @@ sub listitem {
 sub text {
     my ($self, %p) = @_;
 
-    my $c = DContent->new(@{ $p{ text } });
+    my $class = ($p{valign} || '') eq 'c' ? 'DVContent' : 'DContent';
+    my $c = $class->new(@{ $p{ text } });
+    $c->align( $p{align} );
     $self->{ctx}->add( $c );
 }
 
@@ -1167,6 +1169,23 @@ sub new {
     return $self;
 }
 
+# Устанавливает горизонтальное выравнивание абзаца. При вызове без аргумента
+# возвращает текущее значение, а ложное значение удаляет заданное выравнивание.
+sub align {
+    my $self = shift;
+
+    if (@_) {
+        if ($_[0]) {
+            $self->{align} = shift();
+        }
+        else {
+            delete $self->{align};
+        }
+    }
+
+    return $self->{align} || '';
+}
+
 sub stage2size {
     my ($self, $p, @p) = @_;
 
@@ -1214,11 +1233,77 @@ sub toline {
 
 # ============================================================
 # ============================================================
+package DVContent;
+use base 'DContent';
+
+# Текстовый абзац с вертикальным центрированием последней постраничной части.
+# Разбиение строк остаётся обычным: поля добавляются только части, в которую
+# полностью поместился остаток абзаца.
+sub _vfill {
+    my ($self, $h) = @_;
+
+    delete $self->{hbeg};
+    delete $self->{hend};
+
+    my $cont = $self->SUPER::h();
+    return if $cont > $h;
+
+    my $pad = ($h - $cont) / 2;
+    $self->{hbeg} = $pad;
+    $self->{hend} = $pad;
+}
+
+sub dup {
+    my $self = shift;
+    my $dup = $self->SUPER::dup(@_);
+
+    delete $dup->{hbeg};
+    delete $dup->{hend};
+    return $dup;
+}
+
+# После переноса проверяет, является ли новая часть последней, и при
+# необходимости сразу растягивает её на полную высоту страницы.
+sub splitover {
+    my $self = shift;
+
+    $self->_vfill($self->{ctxh}) if defined($self->{ctxh});
+}
+
+sub stage3layout {
+    my ($self, $w, $h, @p) = @_;
+
+    $self->{ctxh} = $h;
+    $self->SUPER::stage3layout($w, $h, @p);
+    $self->_vfill($h);
+}
+
+# Перед обычным разбиением убирает предварительное центрирование. Если весь
+# остаток абзаца вошёл, добавляет поля по фактически доступной высоте; если
+# вошла только часть, она остаётся прижатой к обычной верхней позиции.
+sub hsplit {
+    my ($self, $h) = @_;
+
+    delete $self->{hbeg};
+    delete $self->{hend};
+
+    my $over = $self->SUPER::hsplit($h);
+    if (!defined($over)) {
+        $self->_vfill($self->{ctxh}) if defined($self->{ctxh});
+        return;
+    }
+    $self->_vfill($h) if !@$over;
+    return $over;
+}
+
+
+# ============================================================
+# ============================================================
 package DLine;
 use base 'DNodeH';
 
 # Горизонтальная строка абзаца. Измеряет межсловный интервал, разрезается
-# по ширине и растягивает все строки, кроме последней, для выравнивания justify.
+# по ширине и растягивает строки без явно заданного align для justify.
 sub stage2size {
     my ($self, $p, @p) = @_;
     
@@ -1245,6 +1330,7 @@ sub wsplit {
 
     my $over = $self->SUPER::wsplit(@_) || return;
     @$over                      || return $over; # строка вся влезла
+    $self->{align}              && return $over; # заданное выравнивание сохраняется у всех частей
     my $spcnt = $self->wspcnt() || return $over; # неразрезаемая строка
 
     delete $self->{align};

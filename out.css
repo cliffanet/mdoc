@@ -67,6 +67,10 @@ mark {
     padding: 0.2em 0.4em;
 }
 
+p.center {
+    text-align: center;
+}
+
 pre {
 	background-color: #f8f8f8;
 	border: 1px solid #cccccc;
