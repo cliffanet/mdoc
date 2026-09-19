@@ -198,20 +198,30 @@ sub listitem {
     my $v = $p{mode} eq 'ord' ? ' value="'.int($p{num}).'"' : '';
 
     my ($f, @content) = @{ $p{ content } };
-    
-    $self->{ctx}->add(
-        '<li'.$v.'>',
-        $f->{type} eq 'text' ? (
-            # Первый текстовый абзац пункта не заворачивается в <p>, чтобы
-            # не создавать лишний вертикальный интервал внутри <li>.
+
+    my @body = ();
+    if (!$f) {
+        # Пункт, содержавший только ссылочное определение, остаётся пустым.
+    }
+    elsif ($f->{type} eq 'text') {
+        # Первый текстовый абзац пункта не заворачивается в <p>, чтобы
+        # не создавать лишний вертикальный интервал внутри <li>.
+        @body = (
             '<div>', # иногда всё-таки требуется выделять первый абзац,
-                     # поэтому хоть в какой-нибудь блок его завенуть надо
+                     # поэтому хоть в какой-нибудь блок его завернуть надо
             $self->subnode( @{ $f->{text} } ),
             '</div>',
             $self->subnode( @content )
-        ) : (
-            $self->subnode( @{ $p{ content } } )
-        ),
+        );
+    }
+    else {
+        # Первый элемент пункта является самостоятельным блочным элементом.
+        @body = $self->subnode( @{ $p{ content } } );
+    }
+
+    $self->{ctx}->add(
+        '<li'.$v.'>',
+        @body,
         '</li>',
     );
 }
@@ -378,13 +388,19 @@ sub inlinecode {
     );
 }
 
-# Выводит изображение, кодируя URL и существующий заголовок для HTML-атрибутов.
+# Выводит изображение, кодируя URL, alt и title для HTML-атрибутов. Для
+# inline-изображений без alt сохраняется прежнее дублирование title в alt.
 sub image {
     my ($self, %p) = @_;
 
     my $url = html_escape($p{url});
     my $title = html_escape($p{title});
-    my $attr = exists($p{title}) ? ' alt="'.$title.'" title="'.$title.'"' : '';
+    my $attr = exists($p{alt}) ?
+        ' alt="'.html_escape($p{alt}).'"' :
+        exists($p{title}) ?
+            ' alt="'.$title.'"' :
+            '';
+    $attr .= ' title="'.$title.'"' if exists($p{title});
     
     $self->{ctx}->add(
         '<img src="'.$url.'"'.$attr.'>',

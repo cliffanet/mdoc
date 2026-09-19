@@ -120,5 +120,6 @@ sub code        {}
 sub quote       {}
 sub textblock   {}
 sub paragraph   {}
+sub badgedef    {}
 
 1;

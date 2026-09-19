@@ -1732,7 +1732,7 @@ sub new {
 
     my $self = bless({ url => $url }, $class);
     $self->{title} = $title if $title;
-    $self->{alt} = DTxt->new('[' . $alt . ']') if $alt;
+    $self->{alt} = DTxt->new('[' . $alt . ']') if defined($alt) && length($alt);
 
     return $self;
 }
@@ -2138,12 +2138,20 @@ sub stage2size {
 
     $self->{pad}    = 20;
     $self->{nw}     = $p->{style}->width($self->{num} . '  ');
+    $self->{lineh}  = $p->{style}->height();
 
     $self->{hspc}   = 12;
     $self->{font}   = [ $p->{style}->font() ];
     $self->{ulpos}  = $p->{style}->ulpos();
 
     $self->SUPER::stage2size($p, @p);
+}
+
+# Пустому пункту после удаления ссылочного определения оставляет высоту строки.
+sub h {
+    my $self = shift;
+    my $h = $self->SUPER::h(@_);
+    return $h > ($self->{lineh} || 0) ? $h : ($self->{lineh} || 0);
 }
 
 sub stage3layout {

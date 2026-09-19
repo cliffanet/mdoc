@@ -3,6 +3,7 @@ package prs;
 use strict;
 use warnings;
 use utf8;
+use feature qw(fc unicode_strings);
 
 =pod
     ======================================================================
@@ -28,6 +29,10 @@ my $textend = qr/(?: {0,3}\t| {4})? {0,3}(?:[\*\-]|\d+\.)[ \t]+| {0,3}(?:___+|-+
 # косой чертой. $escaped дополнительно включает саму косую черту перед знаком.
 my $punctuation = qr/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/;
 my $escaped = qr/\\$punctuation/;
+
+# URL ссылочного определения без угловых скобок. Баланс круглых скобок
+# проверяется отдельно, чтобы не ограничивать глубину вложенности шаблоном.
+my $refurl = qr/(?:$escaped|[^\s\<\>])+/;
 
 =pod
 
@@ -221,6 +226,72 @@ sub txt2str {
     return $s;
 }
 
+# Нормализует ссылочную метку по правилам CommonMark: Unicode case folding,
+# удаление крайних пробелов и объединение внутреннего whitespace.
+sub _badgenorm {
+    my $s = fc(unescape(shift() // ''));
+
+    $s =~ s/^[\x20\t\r\n]+//;
+    $s =~ s/[\x20\t\r\n]+$//;
+    $s =~ s/[\x20\t\r\n]+/ /g;
+    return $s;
+}
+
+# Проверяет баланс неэкранированных круглых скобок в URL.
+sub _badgeurl {
+    my $s = shift;
+    my $deep = 0;
+
+    while (length($s)) {
+        if ($s =~ s/^\\$punctuation//) {
+            next;
+        }
+        my $c = substr($s, 0, 1, '');
+        $deep ++ if $c eq '(';
+        return if ($c eq ')') && !$deep;
+        $deep -- if $c eq ')';
+    }
+
+    return $deep == 0;
+}
+
+# Заменяет ссылочные изображения найденными определениями. Неизвестная метка
+# восстанавливается исходным txt-фрагментом и выводится буквально. Проход выполняется
+# после полного разбора, так как ссылочное определение может находиться после его использования.
+sub _badgeresolve {
+    my ($v, $ball) = @_;
+
+    if (ref($v) eq 'ARRAY') {
+        foreach my $n (0 .. $#$v) {
+            my $e = $v->[$n];
+            if ((ref($e) eq 'HASH') && (($e->{type} || '') eq 'badge')) {
+                my $def = $ball->{ _badgenorm($e->{code}) };
+                if (!$def) {
+                    $v->[$n] = $e->{raw};
+                    next;
+                }
+
+                $v->[$n] = {
+                    type    => 'image',
+                    pos     => $e->{pos},
+                    url     => $def->{url},
+                    text    => $e->{text} || [],
+                    alt     => txt2str(@{ $e->{text} || [] }),
+                    exists($def->{title}) ?
+                        (title  => $def->{title}) : (),
+                };
+                next;
+            }
+            _badgeresolve($e, $ball);
+        }
+    }
+    elsif (ref($v) eq 'HASH') {
+        foreach my $e (values %$v) {
+            _badgeresolve($e, $ball) if ref($e) eq 'ARRAY' || ref($e) eq 'HASH';
+        }
+    }
+}
+
 
 # ----------------------------------------------------------------------
 # ---
@@ -235,6 +306,7 @@ sub doc {
     my $content = [];
     my %idall = ();
     my @hall = ();
+    my %ball = ();
     my %align = ();
     my $alignpos;
 
@@ -251,7 +323,7 @@ sub doc {
         my $e =
             modificator ($s)                 || # Специальные модификаторы и
             header      ($s, \%idall, \@hall)|| # заголовки могут быть только на верхнем уровне
-            paragraph   ($s);
+            paragraph   ($s, \%ball);
         
         $e || return err($s->{pos}, 'doc > Can\t parse symbol');
 
@@ -301,6 +373,10 @@ sub doc {
             )
         );
     }
+
+    # Определения собраны во время основного прохода. После полного разбора
+    # разрешаем ссылки, которые могут находиться раньше своих определений.
+    _badgeresolve($content, \%ball);
 
     # Оглавлению нужен полный список заголовков независимо от положения
     # модификатора в документе. Элементы списка не изменяются рендерерами.
@@ -373,12 +449,12 @@ sub header {
 # ---
 # Разбирает вложенный уровень документа, состоящий только из абзацных элементов.
 sub level {
-    my ($s) = @_;
+    my ($s, $ball) = @_;
 
     my $content = [];
 
     while (!$s->empty()) {
-        my $e = paragraph($s);
+        my $e = paragraph($s, $ball);
         $e || return err($s->{pos}, 'level > Can\t parse symbol');
         contadd($content, $e);
     }
@@ -390,7 +466,7 @@ sub level {
 # Пропускает разделяющие пустые строки и запускает подходящий распознаватель
 # одного блочного элемента.
 sub paragraph {
-    my ($s) = @_;
+    my ($s, $ball) = @_;
 
     # Сразу пропустим все пустые строки, т.к. они в этом месте всегда игнорируются
     while (($s->{txt} ne '') && (my ($ln, $tail) = $s->line(1))) {
@@ -399,12 +475,12 @@ sub paragraph {
     }
 
     my $e =
-        list        ($s) ||
+        list        ($s, $ball) ||
         hline       ($s) ||
         code        ($s) ||
-        quote       ($s) ||
+        quote       ($s, $ball) ||
         textblock   ($s) ||
-        badge       ($s) ||
+        badge       ($s, $ball) ||
         table1      ($s) ||
         table2      ($s) ||
         text        ($s);
@@ -444,15 +520,16 @@ sub text {
 }
 
 # Распознаёт один элемент маркированного или нумерованного списка вместе
-# с его вложенным блоком. Объединение соседних пунктов выполняет contadd().
+# с его вложенным блоком. Первым блоком может быть ссылочное определение.
+# Объединение соседних пунктов выполняет contadd().
 sub list {
-    my ($s) = @_;
+    my ($s, $ball) = @_;
 
     match($s, my $mode, qr/ {0,3}([\*\-]|\d+\.)[ \t]+/) || return;
-    my @content = text($s) || return;
+    my @content = badge($s, $ball) || text($s) || return;
 
     if (my $ind = indent($s, qr/(?: {4}| {0,3}\t)/, 1)) {
-        my $sub = level($ind) || return;
+        my $sub = level($ind, $ball) || return;
         push @content, @$sub;
     }
 
@@ -558,11 +635,11 @@ sub code {
 
 # Вырезает строки с префиксом > и рекурсивно разбирает их как вложенный уровень.
 sub quote {
-    my ($s) = @_;
+    my ($s, $ball) = @_;
 
     my @pos = $s->pos();
     my $ind = indent($s, qr/ {0,3}\>/) || return;
-    my $cont = level($ind) || return;
+    my $cont = level($ind, $ball) || return;
 
     $_[0] = $s;
     return {
@@ -589,43 +666,40 @@ sub textblock {
 }
 
 # Разбирает определение ссылочной метки: код, URL и необязательный заголовок.
+# URL может быть заключён в угловые скобки, а title может занимать несколько
+# строк, но не содержит пустого абзаца.
 sub badge {
-    my ($s) = @_;
+    my ($s, $ball) = @_;
 
-    # code
-    match($s, my $code, qr/^ {0,3}\[([^\[\]]+)\]\s*\:/) || return;
-    $code = str($code) || return;
+    my @pos = $s->pos();
+    match(
+        $s,
+        my $code, my $url1, my $url2,
+        my $title1, my $title2, my $title3,
+        qr/ {0,3}\[((?:$escaped|[^\[\]\r\n])+?)\][ \t]*\:[ \t]*(?:\r?\n[ \t]*)?(?:\<((?:$escaped|[^\<\>\r\n])*)\>|($refurl))(?:(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:\"((?:$escaped|[^\"])*)\"|\'((?:$escaped|[^\'])*)\'|\(((?:$escaped|[^\(\)])*)\)))?[ \t]*(?:\r?\n|$)/
+    ) || return;
 
-    # url
-    match($s, my $url, qr/\s*(\S+)/) || return;
+    return if $code->{txt} !~ /[^\s]/;
 
-    # title
-    my $title;
-    if (
-            match(
-                $s,
-                my $title1, my $title2, my $title3,
-                qr/\s+(?:\"((?:$escaped|[^\"])*)\"|\'((?:$escaped|[^\'])*)\'|\(((?:$escaped|[^\(\)])*)\))/
-            )
-        ) {
-        $title = $title1 || $title2 || $title3;
-        return if $title->match(qr/\n\s*\n/);
-        $title->{txt} = unescape($title->{txt});
-    }
+    my $url = $url1 || $url2;
+    my $title = $title1 || $title2 || $title3;
+    return if $url2 && !_badgeurl($url2->{txt});
+    return if $title && ($title->{txt} =~ /\n[ \t\r]*\n/);
 
-    # завершаем строку, она должна быть пустой
-    my $ln = line($s);
-    $ln->empty() || return;
+    my $e = {
+        type    => 'badgedef',
+        pos     => [@pos],
+        code    => $code->{txt},
+        url     => unescape($url->{txt}),
+        $title ?
+            (title   => unescape($title->{txt})) : (),
+    };
+
+    my $key = _badgenorm($e->{code});
+    $ball->{$key} = $e if $ball && !exists($ball->{$key});
 
     $_[0] = $s;
-    return {
-        type    => 'badgedef',
-        pos     => [$s->pos()],
-        code    => $code,
-        url     => $url->{txt},
-        $title ?
-            (title   => $title) : (),
-    };
+    return $e;
 }
 
 # Разбирает одну строку pipe-таблицы и возвращает список inline-ячеек.
@@ -1121,21 +1195,40 @@ sub inline_href {
     };
 }
 
+# Разбирает полную, свёрнутую и короткую формы ссылочного изображения.
 sub inline_badge {
     my ($s) = @_;
 
+    my $src = $s->copy();
+
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
+    my $desc = $s->{txt};
     my $text = inline($s, qr/\]/) || return;
 
-    match($s, my $code, qr/\[([^\[\]]+)\]/) || return;
-    $code = str($code) || return;
+    my $used = length($desc) - length($s->{txt});
+    my $code = substr($desc, 0, $used);
+    $code =~ s/\]$//;
+
+    # Полная форма имеет собственную метку, свёрнутая и короткая используют
+    # исходное содержимое описания изображения.
+    if (match($s, my $label, qr/\[((?:$escaped|[^\[\]\r\n])+)\]/)) {
+        $code = $label->{txt};
+    }
+    else {
+        match($s, qr/\[\]/);
+    }
+
+    return if $code !~ /[^\s]/;
+
+    my $len = length($src->{txt}) - length($s->{txt});
+    my $raw = $src->copy(txt => substr($src->{txt}, 0, $len));
 
     $_[0] = $s;
     return {
         type    => 'badge',
         code    => $code,
-        @$text ?
-            (text   => $text)           : (),
+        raw     => $raw,
+        text    => $text,
     };
 }
 
