@@ -99,33 +99,35 @@ sub err {
 # включая вычисленный тип результата и рабочий каталог исходного файла.
 sub arg {
     my $r = {};
-    my ($h, $t, $root, $baseuri, $lnkfmt, $tocnoh1, $tochmax, $pagenumber, @file);
 
     GetOptions(
-        'help'          => \$h,
-        'type=s'        => \$t,
-        'root-dir=s'    => \$root,
-        'base-uri=s'    => \$baseuri,
-        'lnk-fmt!'      => \$lnkfmt,
-        'toc-noh1!'     => \$tocnoh1,
-        'toc-hmax=s'    => \$tochmax,
-        'page-number!'  => \$pagenumber,
-        '<>'            => sub { push @file, shift(); },
+        'h|help'        => sub { usage() },
+        't|type=s'      => sub { $r->{type}             = $_[1] },
+        'r|root-dir=s'  => sub { $r->{root}             = $_[1] },
+        'b|base-uri=s'  => sub { $r->{'base-uri'}       = $_[1] if $_[1] },
+        'lnk-fmt!'      => sub { $r->{'lnk-fmt'}        = $_[1] },
+        'toc-noh1!'     => sub { $r->{'toc-noh1'}       = $_[1] },
+        'toc-hmax=s'    => sub { $r->{'toc-hmax'}       = $_[1] },
+        'page-number!'  => sub { $r->{'page-number'}    = $_[1] },
+        '<>'            => sub {
+            if (!exists($r->{src})) {
+                $r->{src} = shift();
+            }
+            elsif (!exists($r->{dst})) {
+                $r->{dst} = shift();
+            }
+            else {
+                usage('Too many defined files');
+            }
+        },
     ) || return usage('');
-    return usage() if $h;
 
-    ($r->{src}, $r->{dst}, @file) = @file;
     $r->{src} ||
         return usage('Not defined source file');
     $r->{dst} ||
         return usage('Not defined destination file');
-    @file &&
-        return usage('Too many defined files');
     
-    if ($t) {
-        $r->{type} = $t;
-    }
-    else {
+    if (!$r->{type}) {
         ($r->{dst} =~ /\.([a-z]{2,5})$/i) ||
             return usage('Can\'t check type of destination file');
 
@@ -134,9 +136,9 @@ sub arg {
     eval("require out::$r->{type};") ||
         return usage('Type \'%s\' of destination file not found: %s', $r->{type}, $@);
     
-    if ($root) {
-        $r->{root} = abs_path($root) ||
-            return usage('Work directory fail: %s', $root);
+    if ($r->{root}) {
+        $r->{root} = abs_path($r->{root}) ||
+            return usage('Work directory fail: %s', $r->{root});
     }
     else {
         my $path = abs_path($r->{src});
@@ -144,15 +146,6 @@ sub arg {
             $r->{root} = $path;
         }
     }
-
-    $r->{'base-uri'} = $baseuri if $baseuri;
-
-    $r->{'lnk-fmt'} = $lnkfmt if defined $lnkfmt;
-
-    $r->{'toc-noh1'} = $tocnoh1 if defined $tocnoh1;
-    $r->{'toc-hmax'} = $tochmax if defined $tochmax;
-
-    $r->{'page-number'} = $pagenumber if defined $pagenumber;
 
     return $r;
 }
