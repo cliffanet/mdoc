@@ -241,7 +241,9 @@ sub list {
 sub listitem {
     my ($self, %p) = @_;
 
-    my $c = DListItem->new($p{mode} eq 'ord' ? int($p{num}) . '.' : ' ' . $p{mode});
+    my $c = DListItem->new(
+        $p{mode} eq 'ord' ? int($p{num}) . ($p{mark} // '.') : ' ' . $p{mode}
+    );
     $self->{ctx}->add( $c );
 
     local $self->{ctx} = $c;

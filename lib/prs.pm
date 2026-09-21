@@ -23,7 +23,7 @@ use feature qw(fc unicode_strings);
 # шаблон завершения текстового абзаца - в какой момент надо прервать текстовый блок
 # применяется к началу строки, указывать ^ тут не надо
 # шаблон учитывает все варианты начала разных нетекстовых блоков.
-my $textend = qr/(?: {0,3}\t| {4})? {0,3}(?:[\*\-]|\d+\.)[ \t]+| {0,3}(?:___+|-+)?[ \t\r]*(?:\n|$)| {0,3}(?:\`\`\`)/;
+my $textend = qr/(?: {0,3}\t| {4})? {0,3}(?:[\*\-\+]|\d+[\.\)])[ \t]+| {0,3}(?:___+|-+)?[ \t\r]*(?:\n|$)| {0,3}(?:\`\`\`)/;
 
 # ASCII-знаки пунктуации, которые CommonMark разрешает экранировать обратной
 # косой чертой. $escaped дополнительно включает саму косую черту перед знаком.
@@ -176,8 +176,8 @@ sub inline_target {
     return $r;
 }
 
-# Добавляет элемент в content. Последовательные элементы listitem одного типа
-# объединяются в общий list, остальные элементы добавляются без преобразования.
+# Добавляет элемент в content. Последовательные элементы listitem с одинаковым
+# типом маркера объединяются в общий list, остальные добавляются без преобразования.
 sub contadd {
     my ($c, $e) = @_;
 
@@ -185,7 +185,11 @@ sub contadd {
         my ($prv) = @$c ? $c->[ @$c-1 ] : undef;
         if (
                 $prv && ($prv->{type} eq 'list') &&
-                ($prv->{mode} eq $e->{mode})
+                ($prv->{mode} eq $e->{mode}) &&
+                (
+                    ($e->{mode} ne 'ord') ||
+                    (($prv->{mark} // '.') eq ($e->{mark} // '.'))
+                )
             ) {
             push @{ $prv->{content} }, $e;
             return $c;
@@ -193,6 +197,7 @@ sub contadd {
         $e = {
             type    => 'list',
             mode    => $e->{mode},
+            $e->{mode} eq 'ord' ? (mark => $e->{mark}) : (),
             content => [$e]
         };
     }
@@ -523,7 +528,7 @@ sub text {
 sub list {
     my ($s, $glb) = @_;
 
-    match($s, my $mode, qr/ {0,3}([\*\-]|\d+\.)[ \t]+/) || return;
+    match($s, my $mark, qr/ {0,3}([\*\-\+]|\d+[\.\)])[ \t]+/) || return;
     my @content = badge($s, $glb) || text($s, $glb) || return;
 
     if (my $ind = indent($s, qr/(?: {4}| {0,3}\t)/, 1)) {
@@ -534,12 +539,13 @@ sub list {
     $_[0] = $s;
     return {
         type    => 'listitem',
-        pos     => [$mode->pos()],
-        $mode->{txt} =~ /(\d+)/ ? (
+        pos     => [$mark->pos()],
+        $mark->{txt} =~ /(\d+)([\.\)])/ ? (
             mode    => 'ord',
-            num     => int($1)
+            num     => int($1),
+            mark    => $2
         ) : (
-            mode    => $mode->{txt}
+            mode    => $mark->{txt}
         ),
         content   => [@content]
     };
