@@ -523,13 +523,32 @@ sub text {
 }
 
 # Распознаёт один элемент маркированного или нумерованного списка вместе
-# с его вложенным блоком. Первым блоком может быть ссылочное определение.
-# Объединение соседних пунктов выполняет contadd().
+# с его вложенным блоком. В начале текстового абзаца выделяет task-маркер,
+# иначе первым блоком может быть ссылочное определение. Объединение соседних
+# пунктов выполняет contadd().
 sub list {
     my ($s, $glb) = @_;
 
     match($s, my $mark, qr/ {0,3}([\*\-\+]|\d+[\.\)])[ \t]+/) || return;
-    my @content = badge($s, $glb) || text($s, $glb) || return;
+
+    my $task;
+    if (match($s, my $flag, qr/\[([ xX~])\][ \t]+(?=\S)/)) {
+        my %state = (
+            ' ' => 'off',
+            x   => 'on',
+            X   => 'on',
+            '~' => 'mid'
+        );
+        $task = $state{ $flag->{txt} };
+    }
+
+    my @content;
+    if ($task) {
+        @content = text($s, $glb) || return;
+    }
+    else {
+        @content = badge($s, $glb) || text($s, $glb) || return;
+    }
 
     if (my $ind = indent($s, qr/(?: {4}| {0,3}\t)/, 1)) {
         my $sub = level($ind, $glb) || return;
@@ -547,6 +566,7 @@ sub list {
         ) : (
             mode    => $mark->{txt}
         ),
+        $task ? (task => $task) : (),
         content   => [@content]
     };
 }

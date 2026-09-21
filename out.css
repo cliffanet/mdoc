@@ -127,6 +127,24 @@ ul.toc ul {
     padding-left: 1.5em;
 }
 
+ul.task-list > li.task-list-item {
+    list-style: none;
+}
+
+input.task-partial {
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+    width: 0.9em;
+    height: 0.9em;
+    margin: 0 0.25em 0 0.2em;
+    border: 1px solid currentColor;
+    border-radius: 0.15em;
+    background: linear-gradient(currentColor, currentColor) center / 0.5em 0.12em no-repeat;
+    opacity: 0.6;
+    vertical-align: -0.05em;
+}
+
 table {
 	border-collapse: collapse;
 }

@@ -184,18 +184,28 @@ sub list {
     my ($self, %p) = @_;
 
     my $l = $p{mode} eq 'ord' ? 'ol' : 'ul';
+    my $class = (grep { $_->{task} } @{ $p{content} }) ? ' class="task-list"' : '';
     
     $self->{ctx}->add(
-        '<'.$l.'>',
+        '<'.$l.$class.'>',
         $self->subnode( @{ $p{ content } } ),
         '</'.$l.'>',
     );
 }
 
+# Выводит пункт списка и добавляет перед первым абзацем статический checkbox,
+# если парсер назначил пункту task-состояние.
 sub listitem {
     my ($self, %p) = @_;
 
     my $v = $p{mode} eq 'ord' ? ' value="'.int($p{num}).'"' : '';
+    my $class = $p{task} ? ' class="task-list-item"' : '';
+    my %input = (
+        off => '<input type="checkbox" disabled> ',
+        on  => '<input type="checkbox" checked disabled> ',
+        mid => '<input type="checkbox" class="task-partial" aria-checked="mixed" disabled> '
+    );
+    my $input = $input{ $p{task} || '' } || '';
 
     my ($f, @content) = @{ $p{ content } };
 
@@ -209,6 +219,7 @@ sub listitem {
         @body = (
             '<div>', # иногда всё-таки требуется выделять первый абзац,
                      # поэтому хоть в какой-нибудь блок его завернуть надо
+            $input,
             $self->subnode( @{ $f->{text} } ),
             '</div>',
             $self->subnode( @content )
@@ -220,7 +231,7 @@ sub listitem {
     }
 
     $self->{ctx}->add(
-        '<li'.$v.'>',
+        '<li'.$class.$v.'>',
         @body,
         '</li>',
     );

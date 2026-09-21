@@ -86,6 +86,19 @@
     В каждом элементе списка, если это простой текст, в теги <p></p> оборачиваются абзацы, начиная со второго.
     Первый абзац в тэг <p></p> не оборачивается, но оборачивается в тег <div></div>.
 
+- Task list
+
+    <ul class="task-list">
+        <li class="task-list-item"><div><input type="checkbox" disabled> Невыполненная задача</div></li>
+        <li class="task-list-item"><div><input type="checkbox" checked disabled> Выполненная задача</div></li>
+        <li class="task-list-item"><div><input type="checkbox" class="task-partial" aria-checked="mixed" disabled> Промежуточное состояние</div></li>
+    </ul>
+
+    Класс task-list назначается списку, содержащему задачи, а task-list-item - каждому
+    task-пункту. В нумерованном списке параметр value и видимый номер сохраняются.
+    Все checkbox отключены. Класс task-partial и aria-checked="mixed" обозначают
+    промежуточное состояние.
+
 - Таблица
 
     <table class="table1">

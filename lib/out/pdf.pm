@@ -238,12 +238,17 @@ sub list {
     $self->make(@{ $p{ content } });
 }
 
+# Добавляет пункт списка, заменяя маркер ненумерованной задачи на checkbox
+# или дополняя checkbox номер нумерованной задачи.
 sub listitem {
     my ($self, %p) = @_;
 
-    my $c = DListItem->new(
-        $p{mode} eq 'ord' ? int($p{num}) . ($p{mark} // '.') : ' ' . $p{mode}
-    );
+    my $mark = $p{mode} eq 'ord' ?
+        int($p{num}) . ($p{mark} // '.') :
+        ' ' . $p{mode};
+    $mark = '' if $p{task} && ($p{mode} ne 'ord');
+
+    my $c = DListItem->new($mark, $p{task});
     $self->{ctx}->add( $c );
 
     local $self->{ctx} = $c;
@@ -2123,7 +2128,8 @@ use base 'DNodeV';
 # на страницы дублированная часть не повторяет маркер.
 sub new {
     return shift()->SUPER::new(
-        num => shift()
+        num     => shift(),
+        task    => shift()
     );
 }
 
@@ -2139,12 +2145,23 @@ sub stage2size {
     my ($self, $p, @p) = @_;
 
     $self->{pad}    = 20;
-    $self->{nw}     = $p->{style}->width($self->{num} . '  ');
     $self->{lineh}  = $p->{style}->height();
-
     $self->{hspc}   = 12;
     $self->{font}   = [ $p->{style}->font() ];
     $self->{ulpos}  = $p->{style}->ulpos();
+
+    if ($self->{task}) {
+        $self->{box} = $self->{lineh} * 0.75;
+        $self->{gap} = $p->{style}->width(' ');
+        $self->{tw}  = $p->{style}->width($self->{num});
+        $self->{nw}  =
+            $self->{tw} +
+            ($self->{tw} ? $self->{gap} : 0) +
+            $self->{box} + $self->{gap} * 2;
+    }
+    else {
+        $self->{nw} = $p->{style}->width($self->{num} . '  ');
+    }
 
     $self->SUPER::stage2size($p, @p);
 }
@@ -2166,13 +2183,30 @@ sub stage4draw {
     my ($self, $x, $y, $page, @p) = @_;
     
     if (!$self->{isdup}) {
+        my $base = $y + $self->h() - $self->{font}->[1] - $self->{ulpos};
+        my $beg = $x + $self->{pad} - $self->{nw};
         my $d = PageDraw->new($page);
         $d->font(@{ $self->{font} });
-        $d->text(
-            $x + $self->{pad} - $self->{nw},
-            $y + $self->h() - $self->{font}->[1] - $self->{ulpos},
-            $self->{num}
-        );
+        $d->text($beg, $base, $self->{num}) if length($self->{num});
+
+        if ($self->{task}) {
+            my $bx = $beg + $self->{tw} + ($self->{tw} ? $self->{gap} : 0);
+            my $by = $base + ($self->{font}->[1] - $self->{box}) / 2;
+            my $g = $page->graphics();
+            $g->linewidth(1);
+            $g->rect($bx, $by, $self->{box}, $self->{box});
+
+            if ($self->{task} eq 'on') {
+                $g->move($bx + $self->{box} * 0.18, $by + $self->{box} * 0.52);
+                $g->line($bx + $self->{box} * 0.42, $by + $self->{box} * 0.25);
+                $g->line($bx + $self->{box} * 0.82, $by + $self->{box} * 0.78);
+            }
+            elsif ($self->{task} eq 'mid') {
+                $g->move($bx + $self->{box} * 0.2, $by + $self->{box} * 0.5);
+                $g->hline($bx + $self->{box} * 0.8);
+            }
+            $g->stroke();
+        }
     }
 
     $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
