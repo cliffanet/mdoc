@@ -131,6 +131,22 @@ ul.task-list > li.task-list-item {
     list-style: none;
 }
 
+sup.footnote-ref {
+    line-height: 0;
+}
+
+section.footnotes {
+    margin-top: 2em;
+}
+
+div.footnote-backrefs {
+    margin-top: 0.25em;
+}
+
+a.footnote-backref + a.footnote-backref {
+    margin-left: 0.4em;
+}
+
 input.task-partial {
     -webkit-appearance: none;
     appearance: none;

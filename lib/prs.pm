@@ -260,10 +260,11 @@ sub _badgeurl {
     return $deep == 0;
 }
 
-# Заменяет ссылочные изображения найденными определениями. Неизвестная метка
-# восстанавливается исходным txt-фрагментом и выводится буквально. Проход выполняется
-# после полного разбора, так как ссылочное определение может находиться после его использования.
-sub _badgeresolve {
+# Заменяет ссылочные изображения найденными определениями и собирает
+# ссылки на сноски. Проход выполняется после полного разбора, так как
+# оба вида определений могут находиться после их использования. Неизвестные
+# метки восстанавливаются исходными txt-фрагментами.
+sub _refresolve {
     my ($v, $glb) = @_;
     my $ball = $glb->{ball} || {};
 
@@ -288,14 +289,68 @@ sub _badgeresolve {
                 };
                 next;
             }
-            _badgeresolve($e, $glb);
+            if ((ref($e) eq 'HASH') && (($e->{type} || '') eq 'fnref')) {
+                my $fnrefs = ($glb->{fnrefs} ||= []);
+                push @$fnrefs, [$v, $n, $e];
+                next;
+            }
+            _refresolve($e, $glb);
         }
     }
     elsif (ref($v) eq 'HASH') {
         foreach my $e (values %$v) {
-            _badgeresolve($e, $glb) if ref($e) eq 'ARRAY' || ref($e) eq 'HASH';
+            _refresolve($e, $glb) if ref($e) eq 'ARRAY' || ref($e) eq 'HASH';
         }
     }
+}
+
+# Разрешает собранные ссылки на сноски в порядке их координат в исходнике
+# и возвращает данные итогового блока. Метки сопоставляются точно.
+sub _fnres {
+    my ($glb) = @_;
+    my $fdefs = $glb->{fdefs} || {};
+    my %found = ();
+    my @notes = ();
+
+    my @fnrefs = sort {
+        (($a->[2]->{pos}->[0] || 0) <=> ($b->[2]->{pos}->[0] || 0)) ||
+        (($a->[2]->{pos}->[1] || 0) <=> ($b->[2]->{pos}->[1] || 0))
+    } @{ $glb->{fnrefs} || [] };
+
+    foreach my $ref (@fnrefs) {
+        my ($list, $n, $e) = @$ref;
+        my $def = $fdefs->{ $e->{code} };
+        if (!$def) {
+            # Неизвестная метка остаётся буквальным Markdown-текстом.
+            $list->[$n] = $e->{raw};
+            next;
+        }
+
+        my $note = $found{ $e->{code} };
+        if (!$note) {
+            # Первое разрешённое упоминание задаёт видимый номер сноски.
+            my $num = @notes + 1;
+            $note = $found{ $e->{code} } = {
+                num     => $num,
+                id      => 'fn-' . $num,
+                refs    => [],
+                content => $def->{content}
+            };
+            push @notes, $note;
+        }
+
+        my $cnt = @{ $note->{refs} } + 1;
+        my $id = 'fnref-' . $note->{num};
+        $id .= '-' . $cnt if $cnt > 1;
+        push @{ $note->{refs} }, $id;
+
+        $e->{num} = $note->{num};
+        $e->{id} = $id;
+        $e->{target} = $note->{id};
+        delete $e->{raw};
+    }
+
+    return @notes;
 }
 
 
@@ -307,7 +362,8 @@ sub _badgeresolve {
 # модификаторы документа и заголовки; каждому заголовку назначается уникальный id.
 # Общие данные документа хранятся в %glb, передаваемом во все ветви парсера;
 # вложенные списки и хеши создаются лениво в месте их первого использования. Модификаторы
-# выравнивания удаляются и переносятся в следующий текстовый абзац.
+# выравнивания удаляются и переносятся в следующий текстовый абзац. После полного
+# разбора разрешаются глобальные ссылки и в конец добавляется блок использованных сносок.
 sub doc {
     my ($s) = @_;
 
@@ -380,8 +436,14 @@ sub doc {
     }
 
     # Определения собраны во время основного прохода. После полного разбора
-    # разрешаем ссылки, которые могут находиться раньше своих определений.
-    _badgeresolve($content, \%glb);
+    # одним проходом разрешаем badge и собираем ссылки на сноски, которые могут
+    # находиться раньше своих определений.
+    _refresolve($content, \%glb);
+    my @notes = _fnres(\%glb);
+    push @$content, {
+        type    => 'fnlist',
+        content => [@notes]
+    } if @notes;
 
     # Оглавлению нужен полный список заголовков независимо от положения
     # модификатора в документе. Элементы списка не изменяются рендерерами.
@@ -483,6 +545,7 @@ sub paragraph {
         code        ($s, $glb) ||
         quote       ($s, $glb) ||
         textblock   ($s, $glb) ||
+        fndef       ($s, $glb) ||
         badge       ($s, $glb) ||
         table1      ($s, $glb) ||
         table2      ($s, $glb) ||
@@ -524,8 +587,8 @@ sub text {
 
 # Распознаёт один элемент маркированного или нумерованного списка вместе
 # с его вложенным блоком. В начале текстового абзаца выделяет task-маркер,
-# иначе первым блоком может быть ссылочное определение. Объединение соседних
-# пунктов выполняет contadd().
+# иначе первым блоком может быть ссылочное или сносочное определение. Объединение
+# соседних пунктов выполняет contadd().
 sub list {
     my ($s, $glb) = @_;
 
@@ -547,7 +610,7 @@ sub list {
         @content = text($s, $glb) || return;
     }
     else {
-        @content = badge($s, $glb) || text($s, $glb) || return;
+        @content = fndef($s, $glb) || badge($s, $glb) || text($s, $glb) || return;
     }
 
     if (my $ind = indent($s, qr/(?: {4}| {0,3}\t)/, 1)) {
@@ -695,9 +758,64 @@ sub textblock {
     };
 }
 
+# Разбирает глобальное определение сноски. Первая строка находится после
+# маркера, а последующие блоки имеют отступ в четыре пробела или tab.
+# Вложенные ссылки на сноски не разбираются.
+sub fndef {
+    my ($s, $glb) = @_;
+
+    return if $glb->{infn};
+
+    my @pos = $s->pos();
+    my $ln = line($s, 1) || return;
+    match(
+        $ln,
+        my $code, my $first,
+        qr/ {0,3}\[\^([^\s\^\[\]]+)\]\:[ \t]*(.*)$/
+    ) || return;
+    $ln->empty() || return;
+
+    my $body;
+    my $ind = indent($s, qr/(?: {4}| {0,3}\t)/, 1);
+    if ($first->{txt} ne '') {
+        # Текст определения начинается на строке с маркером.
+        $body = $first->copy();
+        if ($ind) {
+            $body->{txt} .= "\n" . $ind->{txt};
+            my $cur = $body->{pos}->{ind}->[0] || 1;
+            $body->{pos}->{ind} = [$cur, @{ $ind->{pos}->{ind} }];
+        }
+    }
+    elsif ($ind) {
+        # Пустая первая строка допустима при наличии блока с отступом.
+        $body = $ind;
+    }
+    else {
+        # Определение без содержимого некорректно и должно остаться текстом.
+        return;
+    }
+
+    local $glb->{infn} = 1;
+    my $content = level($body, $glb) || return;
+    @$content || return;
+
+    my $e = {
+        type    => 'fndef',
+        pos     => [@pos],
+        code    => $code->{txt},
+        content => $content
+    };
+
+    my $fdefs = ($glb->{fdefs} ||= {});
+    $fdefs->{ $e->{code} } = $e if !exists($fdefs->{ $e->{code} });
+
+    $_[0] = $s;
+    return $e;
+}
+
 # Разбирает определение ссылочной метки: код, URL и необязательный заголовок.
 # URL может быть заключён в угловые скобки, а title может занимать несколько
-# строк, но не содержит пустого абзаца.
+# строк, но не содержит пустого абзаца. Метки, начинающиеся с ^, зарезервированы для сносок.
 sub badge {
     my ($s, $glb) = @_;
 
@@ -710,6 +828,7 @@ sub badge {
     ) || return;
 
     return if $code->{txt} !~ /[^\s]/;
+    return if $code->{txt} =~ /^\^/;
 
     my $url = $url1 || $url2;
     my $title = $title1 || $title2 || $title3;
@@ -1024,6 +1143,7 @@ sub inline {
             inline_italic2  ($s, $glb) ||
             inline_code     ($s, $glb) ||
             inline_image    ($s, $glb) ||
+            inline_fnref    ($s, $glb) ||
             inline_href     ($s, $glb) ||
             inline_badge    ($s, $glb);
         if ($f) {   # сработал один из шаблонов
@@ -1192,6 +1312,9 @@ sub inline_image {
     my ($s, $glb) = @_;
 
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
+    local $glb->{inimg} = 1;
+    # Флаг нужен только на время рекурсивного разбора описания изображения.
+    # local восстановит прежнее значение при выходе, в том числе при ошибке разбора.
     my $text = inline($s, $glb, qr/\]/) || return;
 
     my $target = inline_target($s, $glb) || return;
@@ -1204,6 +1327,23 @@ sub inline_image {
             (text   => $text)           : (),
         exists($target->{title}) ?
             (title  => $target->{title}): (),
+    };
+}
+
+# Разбирает ссылку на сноску. Номер и служебные id назначаются после
+# полного разбора. В определениях сносок и описаниях изображений маркер литерален.
+sub inline_fnref {
+    my ($s, $glb) = @_;
+
+    return if $glb->{infn} || $glb->{inimg};
+
+    my $raw = match($s, my $code, qr/\[\^([^\s\^\[\]]+)\]/) || return;
+
+    $_[0] = $s;
+    return {
+        type    => 'fnref',
+        code    => $code->{txt},
+        raw     => $raw
     };
 }
 
@@ -1233,6 +1373,9 @@ sub inline_badge {
     my $src = $s->copy();
 
     match($s, qr/\!\[(?:[ \t\r]*\n)?/) || return;
+    local $glb->{inimg} = 1;
+    # Флаг нужен только на время рекурсивного разбора описания изображения.
+    # local восстановит прежнее значение при выходе, в том числе при ошибке разбора.
     my $desc = $s->{txt};
     my $text = inline($s, $glb, qr/\]/) || return;
 

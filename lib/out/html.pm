@@ -249,6 +249,31 @@ sub text {
     );
 }
 
+# Выводит итоговый блок сносок с полным блочным содержимым и ссылками
+# возврата ко всем местам её упоминания.
+sub fnlist {
+    my ($self, %p) = @_;
+
+    my @body = ('<section class="footnotes"><hr/><ol>');
+    foreach my $e (@{ $p{content} || [] }) {
+        push @body,
+            '<li id="'.html_escape($e->{id}).'">',
+            $self->subnode(@{ $e->{content} || [] }),
+            '<div class="footnote-backrefs">';
+
+        my $n = 0;
+        foreach my $id (@{ $e->{refs} || [] }) {
+            $n++;
+            my $text = $n == 1 ? '↩' : '↩' . $n;
+            push @body,
+                '<a class="footnote-backref" href="#'.html_escape($id).'">'.$text.'</a>';
+        }
+        push @body, '</div></li>';
+    }
+    push @body, '</ol></section>';
+    $self->{ctx}->add(@body);
+}
+
 sub table {
     my ($self, %p) = @_;
     
@@ -396,6 +421,16 @@ sub inlinecode {
         '<code class="inline">',
         $p{ text },
         '</code>',
+    );
+}
+
+# Выводит надстрочный номер сноски и двусторонние служебные id.
+sub fnref {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add(
+        '<sup class="footnote-ref"><a id="'.html_escape($p{id}).'" href="#'.
+        html_escape($p{target}).'">'.int($p{num}).'</a></sup>'
     );
 }
 

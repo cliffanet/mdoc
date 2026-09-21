@@ -121,5 +121,6 @@ sub quote       {}
 sub textblock   {}
 sub paragraph   {}
 sub badgedef    {}
+sub fndef       {}
 
 1;

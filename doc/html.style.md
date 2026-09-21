@@ -99,6 +99,22 @@
     Все checkbox отключены. Класс task-partial и aria-checked="mixed" обозначают
     промежуточное состояние.
 
+- Сноски
+
+    <section class="footnotes">
+        <hr/>
+        <ol>
+            <li id="fn-1">
+                <p>Текст сноски.</p>
+                <div class="footnote-backrefs"><a class="footnote-backref" href="#fnref-1">↩</a></div>
+            </li>
+        </ol>
+    </section>
+
+    Блок с class="footnotes" добавляется в конец документа. Его элементы li могут
+    содержать любые поддерживаемые блочные элементы. div с class="footnote-backrefs"
+    содержит обратные ссылки ко всем местам упоминания.
+
 - Таблица
 
     <table class="table1">
@@ -159,3 +175,10 @@
     <a href="ссылка" title="необязательная подсказка">Текст</a>
 
     Параметр title является необязательным.
+
+- Ссылка на сноску
+
+    <sup class="footnote-ref"><a id="fnref-1" href="#fn-1">1</a></sup>
+
+    Надстрочный номер ссылается на li соответствующей сноски, а его id служит
+    целью обратной ссылки.

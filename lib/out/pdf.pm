@@ -275,6 +275,37 @@ sub table {
     $tbl->addrow(@$_) foreach @{ $p{row}||[] };
 }
 
+# Добавляет в конец документа разделитель, нумерованные сноски и ссылки
+# возврата ко всем местам упоминания.
+sub fnlist {
+    my ($self, %p) = @_;
+
+    my $line = DHLine->new();
+    $line->{nobrend} = 1;
+    $self->{ctx}->add($line);
+
+    foreach my $e (@{ $p{content} || [] }) {
+        my $c = DFnItem->new($e->{id}, $e->{num});
+        $self->{ctx}->add($c);
+
+        local $self->{ctx} = $c;
+        $self->make(@{ $e->{content} || [] });
+
+        my @back = ();
+        my $n = 0;
+        foreach my $id (@{ $e->{refs} || [] }) {
+            $n++;
+            my $text = $n == 1 ? '↩' : '↩' . $n;
+            push @back, {
+                type    => 'href',
+                url     => '#' . $id,
+                text    => [txt->new($text)]
+            };
+        }
+        $c->add(DContent->new(@back)) if @back;
+    }
+}
+
 
 
 # ============================================================
@@ -1024,6 +1055,9 @@ sub content {
         elsif ($c->{type} eq 'href') {
             $self->toline( DHref->new($c->{url}, $c->{title}, @{ $c->{text} }) );
         }
+        elsif ($c->{type} eq 'fnref') {
+            $self->toline( DFnRef->new($c->{num}, $c->{id}, $c->{target}) );
+        }
         elsif ($c->{type} eq 'image') {
             $self->toline( DImage->new($c->{url}, $c->{title}, $c->{alt}) );
         }
@@ -1674,19 +1708,11 @@ sub remotelink {
     $an->{'A'}->{'D'} = PDF::API2::Basic::PDF::Utils::PDFStr($id);
 }
 
-sub stage4draw {
-    my ($self, $x, $y, $d, $page, $pdf, $opt, @p) = @_;
+# Добавляет Link-аннотацию без отрисовки содержимого и подчёркивания.
+sub _annot {
+    my ($self, $x, $y, $page, $opt) = @_;
 
     my ($w, $h) = ($self->w(), $self->h());
-
-    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf, $opt, @p);
-
-    $d->gfxcol('#000');
-    my $g = $d->gfx();
-    $g->move($x, $y);
-    $g->hline($x + $w);
-    $g->stroke();
-
     my $an = $page->annotation();
     $an->rect($x, $y, $x + $w, $y + $h);
 
@@ -1724,6 +1750,57 @@ sub stage4draw {
     if (defined(my $title = $self->{title})) {
         $an->{'Contents'} = PDF::API2::Basic::PDF::Utils::PDFStr(_toutf8($title));
     }
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $d, $page, $pdf, $opt, @p) = @_;
+
+    my ($w, $h) = ($self->w(), $self->h());
+
+    $self->SUPER::stage4draw($x, $y, $d, $page, $pdf, $opt, @p);
+
+    $d->gfxcol('#000');
+    my $g = $d->gfx();
+    $g->move($x, $y);
+    $g->hline($x + $w);
+    $g->stroke();
+
+    $self->_annot($x, $y, $page, $opt);
+}
+
+
+# ============================================================
+# ============================================================
+package DFnRef;
+use base 'DHref';
+
+# Надстрочный номер сноски: регистрирует точку возврата и ссылается на текст сноски.
+sub new {
+    my ($class, $num, $id, $target) = @_;
+
+    my $self = $class->SUPER::new('#' . $target, undef, txt->new($num));
+    $self->{id} = $id;
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    my $size = $p->{style}->height();
+    $self->{lift} = $size * 0.35;
+    local $p->{style} = $p->{style}->clone(size => $size * 0.75);
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $d, $page, $pdf, $opt, @p) = @_;
+
+    $y += $self->{lift};
+    $self->DNodeH::stage4draw($x, $y, $d, $page, $pdf, $opt, @p);
+
+    my $dst = $pdf->named_destination('Dests', $self->{id});
+    $dst->destination($page, 'xyz', undef, $y + $self->h(), undef);
+    $self->_annot($x, $y, $page, $opt);
 }
 
 
@@ -2210,6 +2287,33 @@ sub stage4draw {
     }
 
     $self->SUPER::stage4draw($x + $self->{pad}, $y, $page, @p);
+}
+
+
+# ============================================================
+# ============================================================
+package DFnItem;
+use base 'DListItem';
+
+# Нумерованный элемент итогового списка сносок. Именованное назначение
+# регистрируется только у первой постраничной части.
+sub new {
+    my ($class, $id, $num) = @_;
+
+    my $self = $class->SUPER::new($num . '.', undef);
+    $self->{id} = $id;
+    return $self;
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $page, $pdf, @p) = @_;
+
+    if (!$self->{isdup}) {
+        my $dst = $pdf->named_destination('Dests', $self->{id});
+        $dst->destination($page, 'xyz', undef, $y + $self->h(), undef);
+    }
+
+    $self->SUPER::stage4draw($x, $y, $page, $pdf, @p);
 }
 
 
