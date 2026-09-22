@@ -1,6 +1,10 @@
+---
+html-base-img: ../
+---
+
 # Ссылочные изображения
 
-[before]: images/before.png "Определение до использования"
+[before]: img/nature.png "Определение до использования"
 
 Определение перед изображением: ![До использования][before].
 
@@ -48,48 +52,51 @@ URL в угловых скобках: ![Угловой URL][angle].
 
 Настоящее изображение: ![Настоящее изображение][real-image].
 
+Намеренно отсутствующий файл для проверки PDF fallback: ![Отсутствующее изображение][missing-file].
+
 Неизвестная метка остаётся текстом: ![Неизвестное][missing].
 
 Некорректное определение не разрешается: ![Некорректное][broken].
 
-[full ref]: images/full.png "Полный title"
-[Свёрнутое описание]: images/collapsed.png 'Свёрнутый title'
-[Короткое описание]: images/shortcut.png (Короткий title)
-[formatted]: images/formatted.png "Форматированный alt"
-[html-escape]: images/html.png "Title & <tag>"
-[straße]: images/unicode.png
-[space label]: images/spaces.png
-[escaped\!]: images/escaped-label.png
-[duplicate]: images/first.png
-[duplicate]: images/second.png
-[angle]: <images/file with spaces.png>
-[escaped]: images/file\(1\).png "Кавычка: \" и скобка: \)"
-[deep-url]: images/a(b(c(d(e))))/file.png
+[full ref]: img/cats(1).png "Полный title"
+[Свёрнутое описание]: img/megapolis%20skyline.jpg 'Свёрнутый title'
+[Короткое описание]: img/cats(1).png (Короткий title)
+[formatted]: img/nature.png "Форматированный alt"
+[html-escape]: img/cats(1).png "Title & <tag>"
+[straße]: img/megapolis%20skyline.jpg
+[space label]: img/nature.png
+[escaped\!]: img/cats(1).png
+[duplicate]: img/nature.png
+[duplicate]: img/megapolis%20skyline.jpg
+[angle]: <img/megapolis skyline.jpg>
+[escaped]: img/cats\(1\).png "Кавычка: \" и скобка: \)"
+[deep-url]: img/a(b(c(d(e))))/nature.png
 [multiline]:
-    images/multiline.png
+    img/megapolis%20skyline.jpg
     "Первая строка
     вторая строка"
-[empty-title]: images/empty.png ""
+[empty-title]: img/cats(1).png ""
 [empty-url]: <> "Пустой URL"
-[empty-alt]: images/empty-alt.png
-[unused]: images/unused.png
-[real-image]: ../.img.jpg "Реальное изображение"
-[broken]: images/broken.png "Незакрытый title
+[empty-alt]: img/nature.png
+[unused]: img/megapolis%20skyline.jpg
+[real-image]: img/megapolis%20skyline.jpg "Реальное изображение"
+[missing-file]: img/does-not-exist.png
+[broken]: img/nature.png "Незакрытый title
 
-> [quote-ref]: images/quote.png "Определение в цитате"
+> [quote-ref]: img/nature.png "Определение в цитате"
 
-> [nested-first]: images/nested-first.png
+> [nested-first]: img/cats(1).png
 
-[nested-first]: images/top-second.png
+[nested-first]: img/nature.png
 
 - Пункт с определением
 
-    [list-ref]: images/list.png "Определение в списке"
+    [list-ref]: img/megapolis%20skyline.jpg "Определение в списке"
 
-- [empty-list]: images/empty-list.png "Пустой пункт"
+- [empty-list]: img/cats(1).png "Пустой пункт"
 
 - Внешний пункт
 
     - Вложенный пункт
 
-        [nested-ref]: images/nested.png "Определение во вложенном списке"
+        [nested-ref]: img/nature.png "Определение во вложенном списке"

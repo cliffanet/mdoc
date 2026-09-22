@@ -447,12 +447,21 @@ sub fnref {
     );
 }
 
-# Выводит изображение, кодируя URL, alt и title для HTML-атрибутов. Для
-# inline-изображений без alt сохраняется прежнее дублирование title в alt.
+# Выводит изображение, дополняя относительный URL настройкой html-base-img и
+# кодируя атрибуты. Для inline-изображений без alt сохраняется прежнее
+# дублирование title в alt.
 sub image {
     my ($self, %p) = @_;
 
-    my $url = html_escape($p{url});
+    my $url = $p{url};
+    if (
+            ($url ne '') &&
+            ($url !~ /^(?:[a-z][a-z0-9+\.\-]*\:|\/\/|\/|\#)/i) &&
+            (my $base = $self->{opt}->{'html-base-img'})
+        ) {
+        $url = $base . $url;
+    }
+    $url = html_escape($url);
     my $title = html_escape($p{title});
     my $attr = exists($p{alt}) ?
         ' alt="'.html_escape($p{alt}).'"' :

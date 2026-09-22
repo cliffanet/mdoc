@@ -61,6 +61,8 @@ Options:
 
     -b, --base-uri      Base-prefix for relative links
 
+    --html-base-img=PREFIX  Base-prefix for relative image URLs in HTML
+
     --lnk-fmt           Replace .md in anchored links with output format
     --no-lnk-fmt        Preserve .md in anchored links
 
@@ -105,6 +107,7 @@ sub arg {
         't|type=s'      => sub { $r->{type}             = $_[1] },
         'r|root-dir=s'  => sub { $r->{root}             = $_[1] },
         'b|base-uri=s'  => sub { $r->{'base-uri'}       = $_[1] if $_[1] },
+        'html-base-img=s'=>sub { $r->{'html-base-img'} = $_[1] },
         'lnk-fmt!'      => sub { $r->{'lnk-fmt'}        = $_[1] },
         'toc-noh1!'     => sub { $r->{'toc-noh1'}       = $_[1] },
         'toc-hmax=s'    => sub { $r->{'toc-hmax'}       = $_[1] },

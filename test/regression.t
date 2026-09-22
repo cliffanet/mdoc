@@ -20,6 +20,13 @@ my $update = $ENV{MDOC_UPDATE_EXPECTED};
 make_path($out);
 make_path($exp) if $update;
 
+# HTML-файлы в result/regression используют ../img; ссылка ведёт к
+# единственному набору тестовых изображений и не перезаписывает чужой путь.
+my $img = File::Spec->catfile($test, 'result', 'img');
+symlink('../img', $img) || die "Can't link '$img': $!" if !-e $img && !-l $img;
+abs_path($img) eq abs_path(File::Spec->catdir($test, 'img')) ||
+    die "Unexpected image path '$img'";
+
 opendir(my $dh, $test) || die "Can't read '$test': $!";
 my @src = sort grep {
     /\.md\z/ && -f File::Spec->catfile($test, $_)
