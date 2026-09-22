@@ -276,7 +276,8 @@ sub table {
 }
 
 # Добавляет в конец документа разделитель, нумерованные сноски и ссылки
-# возврата ко всем местам упоминания.
+# возврата ко всем местам упоминания. Значок ссылки рисуется векторно,
+# поскольку текущий PDF-шрифт не содержит символ возврата ↩.
 sub fnlist {
     my ($self, %p) = @_;
 
@@ -291,18 +292,13 @@ sub fnlist {
         local $self->{ctx} = $c;
         $self->make(@{ $e->{content} || [] });
 
-        my @back = ();
+        my $back = DContent->new();
         my $n = 0;
         foreach my $id (@{ $e->{refs} || [] }) {
             $n++;
-            my $text = $n == 1 ? '↩' : '↩' . $n;
-            push @back, {
-                type    => 'href',
-                url     => '#' . $id,
-                text    => [txt->new($text)]
-            };
+            $back->toline(DFnBack->new($id, $n));
         }
-        $c->add(DContent->new(@back)) if @back;
+        $c->add($back) if $n;
     }
 }
 
@@ -1860,6 +1856,56 @@ sub stage4draw {
     $g->stroke();
 
     $self->_annot($x, $y, $page, $opt);
+}
+
+
+# ============================================================
+# ============================================================
+# Обратная ссылка сноски: использует обычное внутреннее PDF-действие DHref,
+# но вместо отсутствующего в шрифте символа возврата рисует значок линиями.
+package DFnBack;
+use base 'DHref';
+
+sub new {
+    my ($class, $id, $num) = @_;
+
+    my $self = $class->SUPER::new('#' . $id, undef);
+    $self->content(txt->new($num)) if $num > 1;
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    $self->{icon} = $p->{style}->height() * 0.8;
+    $self->{lineh} = $p->{style}->height();
+    $self->SUPER::stage2size($p, @p);
+    $self->{wbeg} = $self->{icon};
+}
+
+sub h {
+    my $self = shift;
+    my $h = $self->SUPER::h();
+    return $h > $self->{lineh} ? $h : $self->{lineh};
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $d, @p) = @_;
+
+    $self->SUPER::stage4draw($x, $y, $d, @p);
+
+    my $w = $self->{icon};
+    my $h = $self->{lineh};
+    $d->gfxcol('#000');
+    my $g = $d->gfx();
+    $g->move($x + $w * 0.82, $y + $h * 0.78);
+    $g->vline($y + $h * 0.42);
+    $g->hline($x + $w * 0.18);
+    $g->move($x + $w * 0.18, $y + $h * 0.42);
+    $g->line($x + $w * 0.36, $y + $h * 0.60);
+    $g->move($x + $w * 0.18, $y + $h * 0.42);
+    $g->line($x + $w * 0.36, $y + $h * 0.24);
+    $g->stroke();
 }
 
 
