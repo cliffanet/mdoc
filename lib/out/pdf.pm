@@ -12,7 +12,14 @@ use LWP::UserAgent;
 
 use constant mm2pix => 2.8346904;
 
-PDF::API2->add_to_font_path($INC[0], $INC[0].'/fonts', $INC[1], $INC[1].'/fonts', '/System/Library/Fonts', '/System/Library/Fonts/Supplemental', '/Library/Fonts', '~/Library/Fonts');
+# Ищем пользовательские шрифты также в игнорируемой папке fonts корня проекта.
+my $fontdir = abs_path($INC[0].'/../fonts');
+PDF::API2->add_to_font_path(
+    $INC[0], $INC[0].'/fonts', $INC[1], $INC[1].'/fonts',
+    $fontdir ? ($fontdir) : (),
+    '/System/Library/Fonts', '/System/Library/Fonts/Supplemental',
+    '/Library/Fonts', '~/Library/Fonts'
+);
 
 # PDF-рендерер преобразует элементы парсера в дерево объектов раскладки.
 # Размеры, размещение по страницам и отрисовка выполняются отдельными этапами.

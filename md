@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
@@ -9,7 +9,7 @@ use Cwd qw(abs_path);
 
 my @lib;
 BEGIN {
-    @lib = $0;
+    @lib = abs_path(__FILE__);
     $lib[0] =~ s/\/?[^\/\\]+$//;
     unshift @lib, $lib[0].'/lib';
 }
@@ -55,7 +55,7 @@ sub usage {
 Options:
     -h, --help          This usage message
 
-    -t, --type          Out type format (doc, pdf, html)
+    -t, --type          Out type format (html, pdf)
 
     -r, --root-dir      Work directory for including files
 
