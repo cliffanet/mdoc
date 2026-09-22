@@ -1205,8 +1205,8 @@ sub stage4draw {
 package DContent;
 use base 'DNodeV', 'DParserH';
 
-# Текстовый абзац: принимает inline-содержимое, формирует горизонтальные строки
-# и на этапе раскладки переносит их по доступной ширине.
+# Текстовый абзац: принимает inline-содержимое, подгоняет изображения по
+# доступной ширине и переносит горизонтальные строки на этапе раскладки.
 sub new {
     my $self = shift()->SUPER::new();
     $self->content(@_);
@@ -1242,8 +1242,15 @@ sub stage2size {
     $self->SUPER::stage2size($p, @p);
 }
 
+# Масштабирует все вложенные изображения до локальной ширины перед переносом строк.
 sub stage3layout {
     my ($self, $w, $h, @p) = @_;
+
+    $self->dncall(sub {
+        my $node = shift;
+        $node->fitwidth($w) if ref($node) eq 'DImage';
+    });
+
     $self->SUPER::stage3layout($w, $h, @p);
     $self->layout(w => $w);
 }
@@ -1949,8 +1956,8 @@ sub stage4draw {
 package DImage;
 use base 'DNode';
 
-# Неразрывный узел изображения. Если загрузка не удалась, вместо картинки
-# измеряется и выводится альтернативный текст; без него узел имеет нулевой размер.
+# Неразрывный узел изображения. Измеряет исходный размер и при раскладке
+# уменьшает его до ширины блока; ошибка загрузки оставляет альтернативный текст.
 sub new {
     my ($class, $url, $title, $alt) = @_;
 
@@ -1964,13 +1971,14 @@ sub new {
 sub w { shift()->{w}; }
 sub h { shift()->{h}; }
 
+# Загружает изображение и запоминает исходные размеры или измеряет fallback.
 sub stage2size {
     my ($self, $p, @p) = @_;
 
     eval { $self->{img} = $p->_image($self->{url}) };
     if (my $img = $self->{img}) {
-        $self->{w} = $img->width();
-        $self->{h} = $img->height();
+        $self->{srcw} = $self->{w} = $img->width();
+        $self->{srch} = $self->{h} = $img->height();
     }
     elsif (my $alt = $self->{alt}) {
         $alt->stage2size($p, @p);
@@ -1983,14 +1991,27 @@ sub stage2size {
     }
 }
 
+# Подгоняет только загруженное изображение по ширине блока, сохраняя пропорции
+# и исходные размеры для возможного повторного расчёта раскладки.
+sub fitwidth {
+    my ($self, $w) = @_;
+
+    return if !$self->{img} || !$self->{srcw} || ($w <= 0);
+
+    my $scale = $self->{srcw} > $w ? $w / $self->{srcw} : 1;
+    $self->{w} = $self->{srcw} * $scale;
+    $self->{h} = $self->{srch} * $scale;
+}
+
 sub stage3layout {}
 
+# Рисует изображение в рассчитанном размере либо альтернативный текст.
 sub stage4draw {
     my $self = shift;
 
     if ($self->{img}) {
         my ($x, $y, $d, $page) = @_;
-        $page->object($self->{img}, $x, $y);
+        $page->object($self->{img}, $x, $y, $self->{w}, $self->{h});
     }
     elsif ($self->{alt}) {
         $self->{alt}->stage4draw(@_);
