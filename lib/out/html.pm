@@ -394,6 +394,18 @@ sub strike {
     );
 }
 
+sub sup {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add('<sup>', $self->subnode(@{ $p{text} }), '</sup>');
+}
+
+sub sub {
+    my ($self, %p) = @_;
+
+    $self->{ctx}->add('<sub>', $self->subnode(@{ $p{text} }), '</sub>');
+}
+
 sub underline {
     my ($self, %p) = @_;
 

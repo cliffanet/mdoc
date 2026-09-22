@@ -1156,6 +1156,8 @@ sub inline {
             inline_italic1  ($s, $glb) ||
             inline_italic2  ($s, $glb) ||
             inline_code     ($s, $glb) ||
+            inline_sup      ($s, $glb) ||
+            inline_sub      ($s, $glb) ||
             inline_image    ($s, $glb) ||
             inline_fnref    ($s, $glb) ||
             inline_href     ($s, $glb) ||
@@ -1202,7 +1204,8 @@ sub inline_escape {
     my ($s, $glb) = @_;
 
     my $nobrbeg = $s->{prev} && ($s->{prev} =~ /\S$/);
-    match($s, my $text, qr/\\($punctuation)/) || return;
+    my $space = $glb->{inidx} ? qr/ / : qr/(?!)/;
+    match($s, my $text, qr/\\($punctuation|$space)/) || return;
     my $nobrend = $s->{txt} =~ /^\S/;
 
     $_[0] = $s;
@@ -1319,6 +1322,38 @@ sub inline_code {
         type    => 'inlinecode',
         text    => $text->{txt}
     };
+}
+
+# Разбирает непустой индекс до первого неэкранированного однотипного маркера.
+# Обычные пробелы и переносы запрещены, но экранированный пробел допустим.
+sub _inline_idx {
+    my ($s, $glb, $mark, $type) = @_;
+
+    return if $mark eq '~' && $s->{txt} =~ /^\~\~/;
+    my $re = $mark eq '^' ?
+        qr/\^((?:\\ |$escaped|\\[^\s]|[^\s\\\^])+)\^/ :
+        qr/\~((?:\\ |$escaped|\\[^\s]|[^\s\\\~])+)\~/;
+    match($s, my $body, $re) || return;
+
+    local $glb->{inidx} = 1;
+    my $text = inline($body, $glb) || return;
+
+    $_[0] = $s;
+    return { type => $type, text => $text };
+}
+
+sub inline_sup {
+    my ($s, $glb) = @_;
+    my $idx = _inline_idx($s, $glb, '^', 'sup') || return;
+    $_[0] = $s;
+    return $idx;
+}
+
+sub inline_sub {
+    my ($s, $glb) = @_;
+    my $idx = _inline_idx($s, $glb, '~', 'sub') || return;
+    $_[0] = $s;
+    return $idx;
 }
 
 # Разбирает изображение с форматируемым описанием, URL и необязательным title.

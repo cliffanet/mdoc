@@ -1033,11 +1033,15 @@ sub content {
             $self->toline($s);
         }
         elsif ($c->{type} eq 'escape') {
-            my $s = DTxt->new({
-                txt => $c->{text},
-                $c->{nobrbeg} ? (nobrbeg => 1) : (),
-                $c->{nobrend} ? (nobrend => 1) : (),
-            });
+            # Экранированный пробел внутри индекса — отдельный узел: DTxt
+            # отбрасывает строку, состоящую только из пробельных символов.
+            my $s = $c->{text} eq ' ' ?
+                DSpace->new() :
+                DTxt->new({
+                    txt => $c->{text},
+                    $c->{nobrbeg} ? (nobrbeg => 1) : (),
+                    $c->{nobrend} ? (nobrend => 1) : (),
+                });
             $self->toline($s);
         }
         elsif (
@@ -1048,6 +1052,9 @@ sub content {
                 ($c->{type} eq 'mark')
             ) {
             $self->toline( DContentStyle->new($c->{type}, @{ $c->{text} }) );
+        }
+        elsif (($c->{type} eq 'sup') || ($c->{type} eq 'sub')) {
+            $self->toline( DIndex->new($c->{type}, @{ $c->{text} }) );
         }
         elsif ($c->{type} eq 'inlinecode') {
             $self->toline( DICode->new($c->{text}) );
@@ -1343,14 +1350,35 @@ sub hsplit {
 package DLine;
 use base 'DNodeH';
 
-# Горизонтальная строка абзаца. Измеряет межсловный интервал, разрезается
-# по ширине и растягивает строки без явно заданного align для justify.
+# Находит наибольший выступ ниже базовой линии через любые вложенные стили.
+sub _fall {
+    my ($node, $shift) = @_;
+
+    $shift += $node->{shift} || 0 if ref($node) eq 'DIndex';
+    my $fall = $shift < 0 ? -$shift : 0;
+    foreach my $c (@{ $node->{chld} || [] }) {
+        next if ref($c) eq 'HASH';
+        my $v = _fall($c, $shift);
+        $fall = $v if $v > $fall;
+    }
+    return $fall;
+}
+
+# Горизонтальная строка абзаца. Измеряет межсловный интервал, учитывает
+# выступ нижних индексов, разрезается по ширине и растягивает justify.
 sub stage2size {
     my ($self, $p, @p) = @_;
     
     $self->{wspc} = $p->{style}->width(' ');
 
     $self->SUPER::stage2size($p, @p);
+
+    my $fall = 0;
+    foreach my $c (@{ $self->{chld} }) {
+        my $v = _fall($c, 0);
+        $fall = $v if $v > $fall;
+    }
+    $self->{hend} = $fall;
 }
 
 
@@ -1560,6 +1588,35 @@ sub stage4draw {
 
 # ============================================================
 # ============================================================
+package DSpace;
+use base 'DNode';
+
+# Сохраняет экранированный пробел внутри индекса и его фактическую ширину.
+sub new {
+    return shift()->SUPER::new(
+        nospbeg => 1, nospend => 1, nobrbeg => 1, nobrend => 1
+    );
+}
+
+sub stage2size {
+    my ($self, $p) = @_;
+
+    $self->{w} = $p->{style}->width(' ');
+    $self->{h} = $p->{style}->height();
+    $self->{font} = [ $p->{style}->font() ];
+    $self->{ulpos} = $p->{style}->ulpos();
+}
+
+sub stage4draw {
+    my ($self, $x, $y, $d) = @_;
+
+    $d->font(@{ $self->{font} });
+    $d->text($x, $y - $self->{ulpos}, ' ');
+}
+
+
+# ============================================================
+# ============================================================
 package DContentStyle;
 use base 'DNodeH', 'DParserH';
 
@@ -1573,6 +1630,7 @@ sub new {
     $self->content(@_);
     return $self;
 }
+
 
 sub stage2size {
     my ($self, $p, @p) = @_;
@@ -1613,6 +1671,42 @@ sub stage4draw {
         $g->hline($x + $w);
         $g->stroke();
     }
+}
+
+
+# ============================================================
+# ============================================================
+package DIndex;
+use base 'DNodeH', 'DParserH';
+
+# Верхний/нижний индекс: измеряется уменьшенным стилем, а при отрисовке
+# смещает все вложенные элементы относительно базовой линии родителя.
+sub new {
+    my $self = shift()->SUPER::new(mark => shift());
+    $self->content(@_);
+    return $self;
+}
+
+sub stage2size {
+    my ($self, $p, @p) = @_;
+
+    my $size = $p->{style}->height();
+    $self->{base} = $size;
+    $self->{shift} = $size * ($self->{mark} eq 'sup' ? 0.35 : -0.2);
+    local $p->{style} = $p->{style}->clone(size => $size * 0.75);
+    $self->{wspc} = $p->{style}->width(' ');
+    $self->SUPER::stage2size($p, @p);
+}
+
+sub h {
+    my $self = shift;
+    my $h = $self->SUPER::h() + $self->{shift};
+    return $h > $self->{base} ? $h : $self->{base};
+}
+
+sub stage4draw {
+    my ($self, $x, $y, @p) = @_;
+    $self->SUPER::stage4draw($x, $y + $self->{shift}, @p);
 }
 
 
