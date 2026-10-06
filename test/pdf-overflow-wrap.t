@@ -54,6 +54,8 @@ my $plain = _content("Before $word", 100);
 ok(_fits($plain, 100), 'long word fits after ordinary wrapping');
 is(join('', _pieces($plain)), 'Before' . $word, 'long word keeps all characters');
 is(join('', _pieces($plain->{chld}->[0])), 'Before', 'ordinary space break has priority');
+ok(!grep({ exists($_->{wspa}) } @{ $plain->{chld} }),
+    'missing alignment keeps wrapped lines left-aligned');
 
 my $cyr = 'сверхдлинноеслово' x 5;
 my $russian = _content($cyr, 100);
@@ -108,6 +110,25 @@ my $center = _content($word, 100, 'c');
 ok(_fits($center, 100), 'centered text fits');
 @wrong = grep { ($_->{align} || '') ne 'c' } @{ $center->{chld} };
 is(scalar(@wrong), 0, 'all centered fragments keep alignment');
+
+my $right = _content($word, 100, 'r');
+ok(_fits($right, 100), 'right-aligned text fits');
+@wrong = grep { ($_->{align} || '') ne 'r' } @{ $right->{chld} };
+is(scalar(@wrong), 0, 'all right-aligned fragments keep alignment');
+
+my $left = _content($word, 100, 'l');
+ok(_fits($left, 100), 'left-aligned text fits');
+@wrong = grep { ($_->{align} || '') ne 'l' } @{ $left->{chld} };
+is(scalar(@wrong), 0, 'all left-aligned fragments keep alignment');
+
+my $justify = _content(join(' ', ('word') x 12), 100, 'j');
+ok(_fits($justify, 100), 'justified text fits');
+my @jline = @{ $justify->{chld} };
+ok(@jline > 1, 'justified text wraps to multiple lines');
+ok(!grep({ ($_->{align} || '') ne 'j' } @jline), 'all justified fragments keep alignment');
+ok(!grep({ !exists($_->{wspa}) } @jline[0 .. $#jline - 1]),
+    'all nonfinal justified lines receive extra word spacing');
+ok(!exists($jline[-1]->{wspa}), 'final justified line stays left-aligned');
 
 my $tiny = _content("e\x{301}z", 1);
 is(scalar(@{ $tiny->{chld} }), 2, 'one overwide grapheme still makes progress');

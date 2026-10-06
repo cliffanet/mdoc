@@ -193,8 +193,22 @@ sub list {
     );
 }
 
-# Выводит пункт списка и добавляет перед первым абзацем статический checkbox,
-# если парсер назначил пункту task-состояние.
+# Возвращает HTML-атрибут с классом горизонтального выравнивания. Левое
+# выравнивание является стандартным поведением HTML и класса не требует.
+sub _alclass {
+    my $al = shift || '';
+    my %class = (
+        r => 'align-right',
+        c => 'align-center',
+        j => 'align-justify'
+    );
+
+    return '' if !$class{$al};
+    return ' class="'.$class{$al}.'"';
+}
+
+# Выводит пункт списка, переносит выравнивание первого абзаца на div и добавляет
+# статический checkbox, если парсер назначил пункту task-состояние.
 sub listitem {
     my ($self, %p) = @_;
 
@@ -217,8 +231,7 @@ sub listitem {
         # Первый текстовый абзац пункта не заворачивается в <p>, чтобы
         # не создавать лишний вертикальный интервал внутри <li>.
         @body = (
-            '<div>', # иногда всё-таки требуется выделять первый абзац,
-                     # поэтому хоть в какой-нибудь блок его завернуть надо
+            '<div'._alclass($f->{align}).'>',
             $input,
             $self->subnode( @{ $f->{text} } ),
             '</div>',
@@ -237,13 +250,12 @@ sub listitem {
     );
 }
 
+# Выводит текстовый абзац с назначенным парсером горизонтальным выравниванием.
 sub text {
     my ($self, %p) = @_;
 
-    my $class = ($p{align} || '') eq 'c' ? ' class="center"' : '';
-    
     $self->{ctx}->add(
-        '<p'.$class.'>',
+        '<p'._alclass($p{align}).'>',
         $self->subnode( @{ $p{ text } } ),
         '</p>',
     );
@@ -274,6 +286,8 @@ sub fnlist {
     $self->{ctx}->add(@body);
 }
 
+# Выводит таблицу, применяя готовое эффективное выравнивание каждой колонки
+# одинаково к заголовку и всем строкам содержимого.
 sub table {
     my ($self, %p) = @_;
     
@@ -284,13 +298,8 @@ sub table {
     my @a = @{ $p{align}||[] };
     foreach my $h (@{ $p{hdr}||[] }) {
         my $al = shift @a;
-        my $align =
-            $al eq 'r'  ? ' class="align-right"' :
-            $al eq 'c'  ? ' class="align-center"' :
-            #$al eq 'l'  ? ' class="align-left"' :
-                        '';
         push @hdr,
-            '<th'.$align.' style="width: '.int(shift @w).'">',
+            '<th'._alclass($al).' style="width: '.int(shift @w).'">',
             $self->subnode( @$h ),
             '</th>';
     }
@@ -305,17 +314,12 @@ sub table {
         my @a = @{ $p{align}||[] };
         foreach my $col (@$row) {
             my $al = shift(@a) // 'l';
-            my $align =
-                $al eq 'r'  ? ' class="align-right"' :
-                $al eq 'c'  ? ' class="align-center"' :
-                #$al eq 'l'  ? ' class="align-left"' :
-                            '';
             my $width = '';
             if (my $w = shift @w) {
                 $width = ' style="width: '.$w.'"';
             }
             push @body,
-                '<td'.$align.$width.'>',
+                '<td'._alclass($al).$width.'>',
                 $self->subnode( @$col ),
                 '</td>';
         }

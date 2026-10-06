@@ -67,8 +67,16 @@ mark {
     padding: 0.2em 0.4em;
 }
 
-p.center {
+.align-center {
     text-align: center;
+}
+
+.align-right {
+    text-align: right;
+}
+
+.align-justify {
+    text-align: justify;
 }
 
 pre {
